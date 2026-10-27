@@ -43,6 +43,7 @@ public final class RaytracePlugin extends JavaPlugin {
         engine.start();
         config.logSummary();
         getLogger().info("Raytrace enabled - packet-level ESP/freecam protection is active.");
+        
         // Printed on every start so logs always show which build is running.
         getLogger().info("Raytrace version " + getDescription().getVersion() + " (built " + buildStamp + ")");
 
@@ -79,8 +80,6 @@ public final class RaytracePlugin extends JavaPlugin {
 
     /** Runs the built-in self-check shortly after startup, once block mappings are loaded. */
     private void runSelfTestLater() {
-        // GlobalRegionScheduler works on Paper and Folia/Canvas; the legacy Bukkit scheduler
-        // does not.
         Bukkit.getGlobalRegionScheduler().runDelayed(this, scheduledTask -> {
             try {
                 List<RayMathSelfTest.Result> results = RayMathSelfTest.run();
@@ -88,8 +87,7 @@ public final class RaytracePlugin extends JavaPlugin {
                 if (failed == 0) {
                     getLogger().info("Raytrace self-check passed (" + results.size() + " checks).");
                 } else {
-                    getLogger().warning("Raytrace self-check: " + failed + " of " + results.size()
-                            + " checks FAILED - the protection may not be working correctly:");
+                    getLogger().warning("Raytrace self-check: " + failed + " of " + results.size() + " checks FAILED - the protection may not be working correctly:");
                     for (RayMathSelfTest.Result result : results) {
                         if (!result.passed()) {
                             getLogger().warning("  - " + result.name() + (result.detail().isEmpty() ? "" : " -> " + result.detail()));
@@ -107,13 +105,10 @@ public final class RaytracePlugin extends JavaPlugin {
                     getLogger().info("Raytrace block-update copy self-check passed ("
                             + results.size() + " checks).");
                 } else {
-                    getLogger().warning("Raytrace block-update copy self-check: " + failed + " of "
-                            + results.size() + " checks FAILED - hidden block changes could be "
-                            + "exposed or visible changes could be dropped:");
+                    getLogger().warning("Raytrace block-update copy self-check: " + failed + " of " + results.size() + " checks FAILED - hidden block changes could be exposed or visible changes could be dropped:");
                     for (NativePacketSelfTest.Result result : results) {
                         if (!result.passed()) {
-                            getLogger().warning("  - " + result.name()
-                                    + (result.detail().isEmpty() ? "" : " -> " + result.detail()));
+                            getLogger().warning("  - " + result.name() + (result.detail().isEmpty() ? "" : " -> " + result.detail()));
                         }
                     }
                 }
@@ -146,13 +141,11 @@ public final class RaytracePlugin extends JavaPlugin {
                 if (result.passed()) {
                     getLogger().info("Raytrace chunk-masking self-check passed (" + result.detail() + ").");
                 } else {
-                    getLogger().warning("Raytrace chunk-masking self-check FAILED: " + result.detail()
-                            + " - the terrain is NOT being masked in the chunk data.");
+                    getLogger().warning("Raytrace chunk-masking self-check FAILED: " + result.detail() + " - the terrain is NOT being masked in the chunk data.");
                 }
             });
         } catch (RuntimeException exception) {
-            getLogger().warning("Raytrace chunk-masking self-check could not be scheduled on the "
-                    + "world region: " + exception);
+            getLogger().warning("Raytrace chunk-masking self-check could not be scheduled on the world region: " + exception);
         }
     }
 
