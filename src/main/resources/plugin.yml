@@ -1,0 +1,21 @@
+name: Raytrace
+version: '${project.version}'
+main: com.heonezen.raytrace.RaytracePlugin
+api-version: '1.21'
+author: com.heonezen
+folia-supported: true
+description: Packet-level anti-ESP and anti-freecam protection. Hides terrain, ores, entities and hidden activity from clients until a player can legitimately see it.
+website: https://github.com/mishakorzik/Raytrace
+commands:
+  raytrace:
+    description: Raytrace admin tools.
+    usage: /raytrace reload
+    aliases: [rt]
+    permission: raytrace.admin
+permissions:
+  raytrace.admin:
+    description: Allows using the Raytrace admin commands.
+    default: op
+  raytrace.bypass:
+    description: Exempts the player from all Raytrace hiding (terrain mask, entity hiding, effect hiding). Players in spectator mode are always exempt.
+    default: false

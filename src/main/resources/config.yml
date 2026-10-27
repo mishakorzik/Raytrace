@@ -1,0 +1,119 @@
+worlds:
+  world:
+    enabled: true
+    # Checked top-down. Each band extends down to the next below-y, or to bedrock.
+    # Every block below below-y is replaced unless the viewer has earned that cell.
+    layers:
+      - below-y: 64
+        block: STONE
+      - below-y: 0
+        block: DEEPSLATE
+    hide-mobs: true
+    hide-players: true
+    # Non-living things that give away what is underground. Hidden on exactly the same terms
+    # as mobs: inside terrain the viewer has not earned, or behind a wall.
+    #   hide-vehicles:    minecarts of every kind (chest, hopper, furnace, TNT, spawner,
+    #                     command block), boats and chest boats
+    #   hide-decorations: item frames, paintings, armor stands, display entities
+    #   hide-items:       dropped items
+    hide-vehicles: true
+    hide-decorations: true
+    hide-items: true
+    # Natural terrain this close to the real surface stays real. This keeps beaches, oceans,
+    # ice, tree lines and cave entrances visually correct. The value is measured in blocks
+    # above the cutoff: for soil, the top surface-buffer blocks are not replaced by fake stone.
+    # Ores, chests, spawners and similar valuable blocks inside this buffer are still hidden
+    # until the player earns their cell. Larger = smoother surface but a larger hidden band;
+    # smaller = stricter but blockier. Negative disables surface awareness and uses below-y.
+    surface-buffer: 8
+
+  world_nether:
+    enabled: true
+    layers:
+      - below-y: 128
+        block: NETHERRACK
+    hide-mobs: true
+    hide-players: true
+    # Non-living things that give away what is underground. Hidden on exactly the same terms
+    # as mobs: inside terrain the viewer has not earned, or behind a wall.
+    #   hide-vehicles:    minecarts of every kind (chest, hopper, furnace, TNT, spawner,
+    #                     command block), boats and chest boats
+    #   hide-decorations: item frames, paintings, armor stands, display entities
+    #   hide-items:       dropped items
+    hide-vehicles: true
+    hide-decorations: true
+    hide-items: true
+    surface-buffer: 8
+
+  world_the_end:
+    enabled: true
+    layers:
+      - below-y: 64
+        block: END_STONE
+    hide-mobs: true
+    hide-players: true
+    # Non-living things that give away what is underground. Hidden on exactly the same terms
+    # as mobs: inside terrain the viewer has not earned, or behind a wall.
+    #   hide-vehicles:    minecarts of every kind (chest, hopper, furnace, TNT, spawner,
+    #                     command block), boats and chest boats
+    #   hide-decorations: item frames, paintings, armor stands, display entities
+    #   hide-items:       dropped items
+    hide-vehicles: true
+    hide-decorations: true
+    hide-items: true
+    surface-buffer: 8
+
+# Grids and scan limits. All intervals are in server ticks (20 ticks = 1 second).
+grids:
+  blocks:
+    # Terrain grid size in blocks. When a cell is earned, the whole cell becomes real.
+    # Size 10 is cheaper and updates in 10-block steps, but the cell around the player is
+    # coarse and can expose very shallow ores; size 2 hides much more precisely but needs
+    # many more updates. Range 1-16.
+    size: 10
+    # Solid blocks a terrain reveal ray may pass through before it stops. This is only for
+    # deciding which terrain cells the player is looking at; it does not apply to entity rays.
+    occlusion-grace-blocks: 2
+    # Minimum ticks between full terrain scans. 1 = every tick (50 ms). A higher value lowers
+    # CPU use while movement and turning still trigger a scan when the thresholds are passed.
+    # 2 is a good production value; the five rays along the view direction still run every
+    # tick while the player moves or turns, so what you are looking at appears at once.
+    scan-ticks: 2
+    # Skip a full rescan when the player has barely moved or turned.
+    move-threshold-blocks: 1.2
+    yaw-threshold-degrees: 6.0
+    pitch-threshold-degrees: 4.0
+    # Limits per terrain scan. A scan that runs out of budget stops and the next scan carries
+    # on with the following rays, so the whole pattern is still covered, just over a few ticks.
+    # max-scan-micros is the time budget of one scan for one player (1000 = 1 ms). It is what
+    # keeps a single player from ever stalling a region thread; raise it only if reveals feel
+    # slow on a quiet server, lower it on a crowded one.
+    max-scan-micros: 1000
+    max-steps-per-scan: 80000
+    target-total-rays: 1600
+    max-revealed-blocks-per-scan: 20000
+
+  entities:
+    # Entity silhouette sample grid: 5 means up to 5x5 = 25 thin rays per entity. The centre
+    # ray runs first, so a plainly visible entity costs only one ray. Larger = smoother partial
+    # visibility but more CPU; smaller = faster, with coarser edges. Range 1-9.
+    size: 5
+    # Recheck entities every N ticks. 4 = five times per second. An entity whose situation
+    # did not change since the last check (neither it nor the viewer moved) is not traced again.
+    scan-ticks: 4
+    # Search radius in blocks. Keep it at least as large as the server's entity-tracking-range,
+    # otherwise entities outside this radius are never checked. Range 8-200.
+    scan-radius-blocks: 128
+    # Solid blocks allowed between the eye and an entity before the entity is hidden.
+    # 1 lets a ray pass one thin wall block; higher values keep partially covered entities
+    # visible. Range 1-8.
+    occlusion-blocks: 1
+
+# Mute a sound only when it is at least this far away and behind solid blocks.
+# Important sounds (explosions, ender dragon, wither, end crystal, portals) are never muted.
+far-sound-distance: 24.0
+
+# Cancel particles, block animations and minor sounds whose origin is hidden from the viewer.
+# Block updates and hidden block-entity data are always kept consistent and are not controlled
+# by this switch. Important sounds are always allowed.
+hide-effects: true
