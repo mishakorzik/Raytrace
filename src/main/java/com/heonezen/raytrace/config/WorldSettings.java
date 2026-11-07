@@ -105,10 +105,6 @@ public final class WorldSettings {
         return result;
     }
 
-    public List<LayerBand> layers() {
-        return layers;
-    }
-
     public String describeLayers() {
         if (layers.isEmpty()) {
             return "none";

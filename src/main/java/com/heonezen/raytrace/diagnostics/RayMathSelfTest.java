@@ -22,22 +22,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.logging.Logger;
 
-/** Self-checks for the ray, surface and chunk-masking code; runs at startup or stand-alone. */
+// Self-checks for the ray, surface and chunk-masking code; runs at startup or stand-alone.
 public final class RayMathSelfTest {
 
-    /** solid[x][z * 256 + y] - a 16x16x256 chunk of blocks. */
+    // solid[x][z * 256 + y] - a 16x16x256 chunk of blocks.
     private static final boolean[][] SOLID = new boolean[16][16 * 256];
 
     private final List<Result> results = new ArrayList<>();
 
-    private RayMathSelfTest() {
-    }
+    private RayMathSelfTest() {}
 
-    /** One check's outcome. */
-    public record Result(String name, boolean passed, String detail) {
-    }
+    // One check's outcome.
+    public record Result(String name, boolean passed, String detail) {}
 
-    /** Runs every check and returns the outcomes, in order. */
+    // Runs every check and returns the outcomes, in order.
     public static List<Result> run() {
         RayMathSelfTest test = new RayMathSelfTest();
         test.testTraversal();
@@ -48,14 +46,13 @@ public final class RayMathSelfTest {
         return List.copyOf(test.results);
     }
 
-    /** Verifies that the configured fake blocks resolve through the server's own registry. */
+    // Verifies that the configured fake blocks resolve through the server's own registry.
     private void testMasking() {
         section("chunk masking");
         try {
             testMaskingInternal();
         } catch (Throwable throwable) {
-            results.add(new Result("the chunk masking could not be run on this server", false,
-                    String.valueOf(throwable)));
+            results.add(new Result("the chunk masking could not be run on this server", false, String.valueOf(throwable)));
         }
     }
 
@@ -70,14 +67,13 @@ public final class RayMathSelfTest {
         check("the fake deepslate resolves to a block of its own", deepslateState != null ? 1 : 0, 1);
         check("the fake netherrack resolves to a block of its own", netherrackState != null ? 1 : 0, 1);
         check("the fake end stone resolves to a block of its own", endStoneState != null ? 1 : 0, 1);
-        check("the fake stone and the fake deepslate are different blocks", stoneState != null && deepslateState != null && stoneState != deepslateState ? 1 : 0, 1);
+        check("the fake stone and the fake deepslate are different blocks", stoneState != null && deepslateState != null && !stoneState.equals(deepslateState) ? 1 : 0, 1);
         if (stoneState == null || deepslateState == null) {
             return;
         }
 
-        // The native packet path draws the fake blocks from the server's own block states, so
-        // that is what has to be checked here: every fake block has to resolve to a block of its
-        // own, and the deepslate band must not come out as air.
+        // Every fake block must resolve to a real block, and the deepslate band must not come
+        // out as air.
         Object airState = serverBlockState(Material.AIR);
         check("the fake stone is not air", stoneState != null && !stoneState.equals(airState) ? 1 : 0, 1);
         check("the fake deepslate is not air", deepslateState != null && !deepslateState.equals(airState) ? 1 : 0, 1);
@@ -87,7 +83,7 @@ public final class RayMathSelfTest {
     }
 
 
-    /** The block state the server uses for a material. */
+    // The block state the server uses for a material.
     private static Object serverBlockState(Material material) {
         try {
             Class<?> blocks = Class.forName("net.minecraft.world.level.block.Blocks");
@@ -101,7 +97,7 @@ public final class RayMathSelfTest {
         }
     }
 
-    /** Stand-alone entry point: prints the checks and exits non-zero if any of them failed. */
+    // Stand-alone entry point: prints the checks and exits non-zero if any of them failed.
     public static void main(String[] args) {
         List<Result> results = run();
         int failures = 0;
@@ -115,7 +111,7 @@ public final class RayMathSelfTest {
         System.exit(failures == 0 ? 0 : 1);
     }
 
-    /** Checks that trees, mountains and soil resolve to the expected masking ceilings. */
+    // Checks that trees, mountains and soil resolve to the expected masking ceilings.
     private void testSurfaceCeiling() {
         section("surface ceiling");
 
@@ -172,7 +168,7 @@ public final class RayMathSelfTest {
         check("Y 0 is faked as stone", settings.fakeBlockFor(0) == Material.STONE ? 1 : 0, 1);
     }
 
-    /** The block classes that must stay hidden even inside the visual soil buffer. */
+    // The block classes that must stay hidden even inside the visual soil buffer.
     private void testSensitiveBlocks() {
         section("block sensitivity");
         check("an ore is sensitive", NmsBlockReader.isSensitiveMaterial(Material.IRON_ORE) ? 1 : 0, 1);
@@ -182,13 +178,10 @@ public final class RayMathSelfTest {
         check("a log is not sensitive", NmsBlockReader.isSensitiveMaterial(Material.OAK_LOG) ? 0 : 1, 1);
     }
 
-    /**
-     * A tiny in-memory world for the surface checks: a grid of blocks plus the height map
-     * lookup derived from it.
-     */
+    // A tiny in-memory world for the surface checks: a grid of blocks plus the height map
+    // lookup derived from it.
     private static final class SurfaceGrid {
         private final java.util.Map<Long, Material> blocks = new java.util.HashMap<>();
-
         void fill(int x0, int x1, int y0, int y1, Material material) {
             for (int x = x0; x <= x1; x++) {
                 for (int y = y0; y <= y1; y++) {
@@ -196,11 +189,9 @@ public final class RayMathSelfTest {
                 }
             }
         }
-
         private static long key(int x, int y) {
             return ((long) x << 32) | (y & 0xFFFFFFFFL);
         }
-
         World world() {
             return (World) Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(),
                     new Class<?>[]{World.class}, (proxy, method, args) -> {
@@ -235,7 +226,6 @@ public final class RayMathSelfTest {
                         }
                     });
         }
-
         private Chunk chunk() {
             return (Chunk) Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(),
                     new Class<?>[]{Chunk.class}, (proxy, method, args) -> {
@@ -248,7 +238,6 @@ public final class RayMathSelfTest {
                     });
         }
     }
-
     private void testTraversal() {
         section("traversal");
 
@@ -294,10 +283,12 @@ public final class RayMathSelfTest {
         check("the same corner clip is solid without the allowance", BlockRay.countOccluding(world(), 0.5, 64.5, 0.5, 10.5, 64.5, cornerTargetZ, 4), 1);
 
         clearGrid();
-        // H0
-        // 0#
-        // The eye is in H, the target is in #, and the two 0 blocks share the corner.
-        // This is a wall seam, not a single block corner, so the diagonal must stay solid.
+        /**
+         * H0
+         * 0#
+         * The eye is in H, the target is in #, and the two 0 blocks share the corner.
+         * This is a wall seam, not a single block corner, so the diagonal must stay solid.
+         */
         fill(1, 1, 0, 0, 64, 64);
         fill(0, 0, 1, 1, 64, 64);
         check("a wall seam at a block corner is not clipped", BlockRay.countOccluding(world(), 0.5, 64.5, 0.5, 1.5, 64.5, 1.5, 4, 1), 1);
@@ -307,15 +298,14 @@ public final class RayMathSelfTest {
         check("signum(-2)", BlockRay.signum(-2.0), -1);
         check("signum(0)", BlockRay.signum(0.0), 0);
     }
-
     private int countOccluding(double ex, double ey, double ez, double tx, double ty, double tz, int stopAfter) {
         return BlockRay.countOccluding(world(), ex, ey, ez, tx, ty, tz, stopAfter);
     }
-
     private void testRayPattern() {
         section("ray pattern");
 
-        RaytraceEngine engine = new RaytraceEngine(testPlugin(), new RaytraceConfig(testPlugin()));
+        Plugin plugin = testPlugin();
+        RaytraceEngine engine = new RaytraceEngine(plugin, new RaytraceConfig(plugin, plugin.getConfig()));
         float[] xs;
         float[] ys;
         float[] zs;
@@ -341,7 +331,6 @@ public final class RayMathSelfTest {
             results.add(new Result("the ray plan could not be inspected", false, String.valueOf(exception)));
             return;
         }
-
         check("the plan has rays", count > 100 ? 1 : 0, 1);
 
         boolean allUnit = true;
@@ -405,28 +394,18 @@ public final class RayMathSelfTest {
         }
         check("rotating by 45 degrees of pitch shifts every ray by the same pitch", worst < 1.0e-3 ? 1 : 0, 1);
     }
-
     private void section(String name) {
         results.add(new Result("[" + name + "]", true, ""));
     }
-
     private void check(String name, int actual, int expected) {
         boolean ok = actual == expected;
         results.add(new Result(name, ok, ok ? "" : actual + " (expected " + expected + ")"));
     }
-
-    /** A check that compares a name, and reports what it actually found. */
-    private void check(String name, String actual, String expected) {
-        boolean ok = actual.equals(expected);
-        results.add(new Result(name, ok, ok ? "" : "found " + actual + ", expected " + expected));
-    }
-
     private static void clearGrid() {
         for (int x = 0; x < 16; x++) {
             Arrays.fill(SOLID[x], false);
         }
     }
-
     private static void fill(int x0, int x1, int z0, int z1, int y0, int y1) {
         for (int x = x0; x <= x1; x++) {
             for (int z = z0; z <= z1; z++) {
@@ -436,7 +415,6 @@ public final class RayMathSelfTest {
             }
         }
     }
-
     private static World world() {
         Chunk chunk = (Chunk) Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(),
                 new Class<?>[]{Chunk.class}, (proxy, method, args) -> {
@@ -467,15 +445,12 @@ public final class RayMathSelfTest {
                     }
                 });
     }
-
     private static Object block(boolean solid) {
         return block(solid ? Material.STONE : Material.AIR);
     }
-
     private static Object block(Material material) {
         return Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(), new Class<?>[]{Block.class}, (proxy, method, args) -> "getType".equals(method.getName()) ? material : null);
     }
-
     private static Plugin testPlugin() {
         // A minimal but complete configuration, so that building a real RaytraceConfig from it
         // does not print "config.yml has no 'worlds' section" warnings into the server console
@@ -490,11 +465,6 @@ public final class RayMathSelfTest {
                             return configuration;
                         case "getLogger":
                             return Logger.getLogger("RaytraceSelfTest");
-                        case "saveDefaultConfig":
-                        case "reloadConfig":
-                        case "onEnable":
-                        case "onDisable":
-                            return null;
                         case "toString":
                             return "RaytraceSelfTest";
                         case "hashCode":

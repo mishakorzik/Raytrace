@@ -31,7 +31,7 @@ public final class NativeProtocol {
 
     private NativeProtocol() {}
 
-    /** A failed lookup. It carries no stack trace: these are expected and caught constantly. */
+    // A failed lookup. It carries no stack trace: these are expected and caught constantly.
     private static final class MissingMember extends IllegalStateException {
         private static final long serialVersionUID = 1L;
 
@@ -45,7 +45,7 @@ public final class NativeProtocol {
         }
     }
 
-    /** Wraps a reflective failure without capturing a stack trace for the common case. */
+    // Wraps a reflective failure without capturing a stack trace for the common case.
     private static IllegalStateException failure(Throwable cause) {
         return new IllegalStateException(cause);
     }
@@ -76,13 +76,18 @@ public final class NativeProtocol {
     private static final ConcurrentHashMap<MemberKey, Field> FIELDS = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<MemberKey, Method> METHODS = new ConcurrentHashMap<>();
 
-    private static Field field(Class<?> owner, String name) {
+    private static Field lookupField(Class<?> owner, String name) {
         MemberKey key = new MemberKey(owner, name);
         Field cached = FIELDS.get(key);
         if (cached == null) {
             cached = resolveField(owner, name);
             FIELDS.put(key, cached);
         }
+        return cached;
+    }
+
+    private static Field field(Class<?> owner, String name) {
+        Field cached = lookupField(owner, name);
         if (cached == NO_FIELD) {
             throw new MissingMember("No field '" + name + "' on " + owner.getName());
         }
@@ -133,9 +138,7 @@ public final class NativeProtocol {
         }
     }
 
-    private static final Class<?>[] NO_TYPES = new Class<?>[0];
-
-    private static Method zeroArgMethod(Class<?> owner, String name) {
+    private static Method lookupZeroArgMethod(Class<?> owner, String name) {
         MemberKey key = new MemberKey(owner, name);
         Method cached = METHODS.get(key);
         if (cached == null) {
@@ -147,33 +150,27 @@ public final class NativeProtocol {
             }
             METHODS.put(key, cached);
         }
+        return cached;
+    }
+
+    private static Method zeroArgMethod(Class<?> owner, String name) {
+        Method cached = lookupZeroArgMethod(owner, name);
         if (cached == NO_METHOD) {
             throw new MissingMember("No method '" + name + "()' on " + owner.getName());
         }
         return cached;
     }
 
-    public static Object invoke(Object target, String name, Class<?>[] types, Object[] args) {
+    // Invokes a no-argument method by name.
+    public static Object invoke(Object target, String name) {
         try {
-            Method method;
-            if (types == null || types.length == 0) {
-                method = zeroArgMethod(target.getClass(), name);
-            } else {
-                method = target.getClass().getMethod(name, types);
-                method.setAccessible(true);
-            }
-            return method.invoke(target, args);
+            return zeroArgMethod(target.getClass(), name).invoke(target);
         } catch (ReflectiveOperationException exception) {
             throw failure(exception);
         }
     }
 
-    /** Invokes a no-argument method by name. */
-    public static Object invoke(Object target, String name) {
-        return invoke(target, name, NO_TYPES, new Object[0]);
-    }
-
-    /** Invokes a static method by name. */
+    // Invokes a static method by name.
     public static Object invokeStatic(Class<?> owner, String name, Class<?>[] types, Object[] args) {
         try {
             Method method = owner.getMethod(name, types);
@@ -193,42 +190,45 @@ public final class NativeProtocol {
     public static Number readNumber(Object target, String... names) {
         Class<?> type = target.getClass();
         for (String name : names) {
-            try {
-                Method method = zeroArgMethod(type, name);
-                Object value = method.invoke(target);
-                if (value instanceof Number number) {
-                    return number;
+            Method method = lookupZeroArgMethod(type, name);
+            if (method != NO_METHOD) {
+                try {
+                    Object value = method.invoke(target);
+                    if (value instanceof Number number) {
+                        return number;
+                    }
+                } catch (ReflectiveOperationException | RuntimeException ignored) {
+                    // unreadable: try a field
                 }
-            } catch (MissingMember ignored) {
-                // not a method here
-            } catch (ReflectiveOperationException | RuntimeException ignored) {
-                // unreadable: try a field
             }
-            try {
-                Object value = field(type, name).get(target);
-                if (value instanceof Number number) {
-                    return number;
+            Field field = lookupField(type, name);
+            if (field != NO_FIELD) {
+                try {
+                    Object value = field.get(target);
+                    if (value instanceof Number number) {
+                        return number;
+                    }
+                } catch (IllegalAccessException | RuntimeException ignored) {
+                    // next name
                 }
-            } catch (MissingMember ignored) {
-                // not a field here either
-            } catch (IllegalAccessException | RuntimeException ignored) {
-                // next name
             }
         }
         return null;
     }
 
-    /** The first non-null field of several candidate names, or null. */
+    // The first non-null field of several candidate names, or null.
     public static Object readFirstField(Object target, String... names) {
         Class<?> type = target.getClass();
         for (String name : names) {
+            Field field = lookupField(type, name);
+            if (field == NO_FIELD) {
+                continue;
+            }
             try {
-                Object value = field(type, name).get(target);
+                Object value = field.get(target);
                 if (value != null) {
                     return value;
                 }
-            } catch (MissingMember ignored) {
-                // try the next name
             } catch (IllegalAccessException | RuntimeException ignored) {
                 // try the next name
             }
@@ -268,20 +268,20 @@ public final class NativeProtocol {
         }
     }
 
-    /** The player's Netty channel. Paper does not expose it, so reflection is required. */
+    // The player's Netty channel. Paper does not expose it, so reflection is required.
     public static Channel channelOf(Object handle) {
         Object listener = get(handle, "connection");
         Object connection = get(listener, "connection");
         return (Channel) get(connection, "channel");
     }
 
-    /** The server's network connection object of a player (the thing packets are sent through). */
+    // The server's network connection object of a player (the thing packets are sent through).
     public static Object connectionOf(Object handle) {
         Object listener = get(handle, "connection");
         return get(listener, "connection");
     }
 
-    /** Adds the handler at the end of the pipeline, before the server's encoder. */
+    // Adds the handler at the end of the pipeline, before the server's encoder.
     public static void install(Channel channel, ChannelDuplexHandler handler) {
         if (channel == null) {
             return;
@@ -294,7 +294,7 @@ public final class NativeProtocol {
         channel.pipeline().addLast("raytrace", handler);
     }
 
-    /** Removes this plugin's handler from a channel, if present. */
+    // Removes this plugin's handler from a channel, if present.
     public static void uninstall(Channel channel) {
         if (channel == null) {
             return;
@@ -308,28 +308,25 @@ public final class NativeProtocol {
         }
     }
 
-    /** The simple name of a packet class, e.g. {@code ClientboundAddEntityPacket}. */
-    public static String packetName(Object packet) {
-        String name = packet.getClass().getSimpleName();
-        return name.isEmpty() ? packet.getClass().getName() : name;
+    private record SendBinding(Class<?> type, MethodHandle handle) {
     }
 
-    private static volatile MethodHandle sendHandle;
-    private static volatile Class<?> sendConnectionClass;
+    private static volatile SendBinding sendBinding;
 
-    /** Sends a packet through the server's own connection, so the server does the encoding. */
+    // Sends a packet through the server's own connection, so the server does the encoding.
     public static void send(Object connection, Object packet) {
         try {
-            Method method = connection.getClass().getMethod("send",
-                    Class.forName("net.minecraft.network.protocol.Packet"));
-            MethodHandle handle = sendHandle;
-            if (handle == null || sendConnectionClass != connection.getClass()) {
-                handle = MethodHandles.publicLookup().unreflect(method)
+            Class<?> type = connection.getClass();
+            SendBinding binding = sendBinding;
+            if (binding == null || binding.type() != type) {
+                Method method = type.getMethod("send",
+                        Class.forName("net.minecraft.network.protocol.Packet"));
+                MethodHandle handle = MethodHandles.publicLookup().unreflect(method)
                         .asType(MethodType.methodType(void.class, Object.class, Object.class));
-                sendConnectionClass = connection.getClass();
-                sendHandle = handle;
+                binding = new SendBinding(type, handle);
+                sendBinding = binding;
             }
-            handle.invokeExact(connection, packet);
+            binding.handle().invokeExact(connection, packet);
         } catch (Throwable throwable) {
             throw failure(throwable);
         }
@@ -337,7 +334,7 @@ public final class NativeProtocol {
 
     private static volatile Constructor<?> removeEntitiesConstructor;
 
-    /** Builds a remove-entities packet for these ids. */
+    // Builds a remove-entities packet for these ids.
     public static Object newRemoveEntities(int... ids) {
         try {
             Constructor<?> constructor = removeEntitiesConstructor;
@@ -384,7 +381,7 @@ public final class NativeProtocol {
         }
     }
 
-    /** A new bundle of the same class holding these packets, or null if it cannot be built. */
+    // A new bundle of the same class holding these packets, or null if it cannot be built.
     public static Object newBundle(Object template, List<Object> packets) {
         try {
             Constructor<?> constructor = bundleConstructor;
@@ -398,7 +395,7 @@ public final class NativeProtocol {
         }
     }
 
-    /** @return a problem rewriting bundles, or null */
+    // @return a problem rewriting bundles, or null
     public static String bundleSupportProblem() {
         try {
             Class<?> bundle = Class.forName("net.minecraft.network.protocol.game.ClientboundBundlePacket");
@@ -415,16 +412,15 @@ public final class NativeProtocol {
         }
     }
 
-    /**
-     * Block-change packets are broadcast to every tracking player as one shared object, so
-     * masking builds a private copy instead of mutating it. Copies use the server's own packet
-     * constructors.
-     */
+    // Block-change packets are broadcast to every tracking player as one shared object, so
+    // masking builds a private copy instead of mutating it. Copies use the server's own packet
+    // constructors.
     private static volatile Constructor<?> blockUpdateConstructor;
     private static volatile Constructor<?> sectionUpdateConstructor;
     private static volatile Constructor<?> short2ObjectMapConstructor;
     private static volatile Method short2ObjectMapPut;
     private static volatile Method sectionPosOf;
+    private static volatile Class<?> sectionUpdatePacketClass;
 
     /**
      * Builds a private single-block-update packet for one player.
@@ -514,8 +510,12 @@ public final class NativeProtocol {
             Object[] usedStates = java.util.Arrays.copyOf(states, count);
             Object map = short2ObjectMapConstructor.newInstance(usedPositions, usedStates);
             Object section = factory.invoke(null, sectionX, sectionY, sectionZ);
-            Class<?> packetClass = Class.forName(
-                    "net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket");
+            Class<?> packetClass = sectionUpdatePacketClass;
+            if (packetClass == null) {
+                packetClass = Class.forName(
+                        "net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket");
+                sectionUpdatePacketClass = packetClass;
+            }
             return sectionUpdateConstructor(packetClass).newInstance(section, map);
         } catch (Throwable throwable) {
             return null;
@@ -540,7 +540,7 @@ public final class NativeProtocol {
         }
     }
 
-    /** Per-player outgoing handler; all decisions are made by the {@link Interceptor}. */
+    // Per-player outgoing handler; all decisions are made by the {@link Interceptor}.
     public static final class OutboundHandler extends ChannelDuplexHandler {
 
         private final Interceptor interceptor;
@@ -561,7 +561,7 @@ public final class NativeProtocol {
                 Object forwarded = interceptor.intercept(owner, message);
                 if (forwarded == null) {
                     // The interceptor consumed the packet.
-                    promise.setSuccess();
+                    promise.trySuccess();
                     return;
                 }
                 if (forwarded != message) {
@@ -576,7 +576,7 @@ public final class NativeProtocol {
         }
     }
 
-    /** Decides what happens to one outgoing packet. */
+    // Decides what happens to one outgoing packet.
     public interface Interceptor {
         /**
          * @return the packet to forward (the original or a per-player copy), or {@code null} if
@@ -585,7 +585,7 @@ public final class NativeProtocol {
         Object intercept(Object owner, Object packet);
     }
 
-    /** Lazily resolved server chunk classes; the plugin never encodes a section itself. */
+    // Lazily resolved server chunk classes; the plugin never encodes a section itself.
     private static final class ChunkFormat {
 
         private static volatile ChunkFormat instance;
@@ -596,7 +596,7 @@ public final class NativeProtocol {
         final Method getStates;
         final Method get;
         final Method getAndSet;
-        /** Direct handles for the two calls the per-block loops make thousands of times. */
+        // Direct handles for the two calls the per-block loops make thousands of times.
         final MethodHandle getHandle;
         final MethodHandle getAndSetHandle;
         final java.lang.reflect.Constructor<?> sectionConstructor;
@@ -606,7 +606,6 @@ public final class NativeProtocol {
         final Object legacyBlockRegistry;
         final Object legacyBiomeRegistry;
         final Field strategyField;
-        final Method readUnsignedShort;
         final boolean requiresFactory;
 
         private ChunkFormat() throws ReflectiveOperationException {
@@ -635,7 +634,6 @@ public final class NativeProtocol {
             bufferConstructor = bufferClass.getConstructor(ByteBuf.class);
             strategyField = containerClass.getDeclaredField("strategy");
             strategyField.setAccessible(true);
-            readUnsignedShort = bufferClass.getMethod("readUnsignedShort");
 
             // 1.21.5+ builds sections from a PalettedContainerFactory; 1.21.4 and older use
             // the biome registry directly, with no factory class.
@@ -690,7 +688,7 @@ public final class NativeProtocol {
             }
         }
 
-        /** The container strategy class; its package moved in newer builds. */
+        // The container strategy class; its package moved in newer builds.
         private static Class<?> strategyClass() throws ClassNotFoundException {
             try {
                 return Class.forName("net.minecraft.world.level.chunk.PalettedContainer$Strategy");
@@ -699,12 +697,12 @@ public final class NativeProtocol {
             }
         }
 
-        /** A new section in the server's own format, ready to be read from a packet buffer. */
+        // A new section in the server's own format, ready to be read from a packet buffer.
         Object newSection(Object factory) throws ReflectiveOperationException {
             return sectionConstructor.newInstance(requiresFactory ? factory : legacyBiomeRegistry);
         }
 
-        /** A one-value block-state container, the smallest encoding of "all of this is stone". */
+        // A one-value block-state container, the smallest encoding of "all of this is stone".
         Object newSingleValueContainer(Object fake, Object strategy) throws ReflectiveOperationException {
             if (requiresFactory) {
                 return singleValueContainer.newInstance(fake, strategy);
@@ -729,17 +727,31 @@ public final class NativeProtocol {
             return registryAccessClass.getMethod("lookupOrThrow", resourceKey).invoke(registryAccess, biomeKey);
         }
 
+        // After a failed setup the next attempt waits, so that an unsupported server does not
+        // repeat the whole reflective lookup (and its lock) for every single chunk packet.
+        private static final long RETRY_DELAY_NANOS = 30_000_000_000L;
+        private static volatile boolean failedOnce;
+        private static volatile long retryAtNanos;
+
         static ChunkFormat get() {
             ChunkFormat current = instance;
             if (current != null) {
                 return current;
             }
+            if (failedOnce && System.nanoTime() - retryAtNanos < 0) {
+                return null;
+            }
             synchronized (ChunkFormat.class) {
                 if (instance == null) {
+                    if (failedOnce && System.nanoTime() - retryAtNanos < 0) {
+                        return null;
+                    }
                     try {
                         instance = new ChunkFormat();
                     } catch (Throwable throwable) {
                         // A broken server must disable chunk masking, not crash the plugin.
+                        retryAtNanos = System.nanoTime() + RETRY_DELAY_NANOS;
+                        failedOnce = true;
                         return null;
                     }
                 }
@@ -748,24 +760,20 @@ public final class NativeProtocol {
         }
     }
 
-    /**
-     * Null when the server's chunk format is available, otherwise a short problem description.
-     * A broken chunk masking must be loud, not silent.
-     */
+    // Null when the server's chunk format is available, otherwise a short problem description.
+    // A broken chunk masking must be loud, not silent.
     public static String chunkFormatProblem() {
         return ChunkFormat.get() == null ? "the server's chunk classes (LevelChunkSection / PalettedContainer) could not be found" : null;
     }
 
-    /**
-     * Whether sections need the engine's {@code PalettedContainerFactory}. On 1.21.4 and older
-     * a null factory is normal, not a startup failure.
-     */
+    // Whether sections need the engine's {@code PalettedContainerFactory}. On 1.21.4 and older
+    // a null factory is normal, not a startup failure.
     public static boolean palettedContainerFactoryRequired() {
         ChunkFormat format = ChunkFormat.get();
         return format != null && format.requiresFactory;
     }
 
-    /** Creates a fresh section in the server's format, for decoding masked chunks in diagnostics. */
+    // Creates a fresh section in the server's format, for decoding masked chunks in diagnostics.
     public static Object newSectionForRead(Object factory) {
         ChunkFormat format = ChunkFormat.get();
         if (format == null || (format.requiresFactory && factory == null)) {
@@ -778,10 +786,8 @@ public final class NativeProtocol {
         }
     }
 
-    /**
-     * Checks that block-update packets and their per-player copy paths exist on this server.
-     * They are shared between players, so a private copy must be possible.
-     */
+    // Checks that block-update packets and their per-player copy paths exist on this server.
+    // They are shared between players, so a private copy must be possible.
     public static String blockUpdateFormatProblem() {
         try {
             Class<?> packet = Class.forName("net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket");
@@ -822,7 +828,7 @@ public final class NativeProtocol {
         }
     }
 
-    /** @return a problem reading entity spawn/remove packets, or null */
+    // @return a problem reading entity spawn/remove packets, or null
 
     public static String entitySpawnSupportProblem() {
         try {
@@ -856,7 +862,7 @@ public final class NativeProtocol {
         }
     }
 
-    /** @return a problem reading effect-packet coordinates, or null */
+    // @return a problem reading effect-packet coordinates, or null
 
     public static String effectPositionSupportProblem() {
         String[] packets = {
@@ -925,13 +931,13 @@ public final class NativeProtocol {
         return type == byte.class || type == short.class || type == int.class || type == long.class || type == float.class || type == double.class || Number.class.isAssignableFrom(type);
     }
 
-    /** The entity ids of a remove-entities packet, using either accessor name. */
+    // The entity ids of a remove-entities packet, using either accessor name.
     public static int[] removeEntityIds(Object packet) {
         Object ids = null;
         RuntimeException last = null;
         for (String name : new String[]{"getEntityIds", "entityIds"}) {
             try {
-                ids = invoke(packet, name, new Class<?>[0], new Object[0]);
+                ids = invoke(packet, name);
                 break;
             } catch (RuntimeException exception) {
                 last = exception;
@@ -940,18 +946,16 @@ public final class NativeProtocol {
         if (ids == null) {
             throw new IllegalStateException("No entity id accessor on " + packet.getClass().getName(), last);
         }
-        return (int[]) invoke(ids, "toIntArray", new Class<?>[0], new Object[0]);
+        return (int[]) invoke(ids, "toIntArray");
     }
 
-    /** Blocks this viewer has already earned; they stay unmasked. */
+    // Blocks this viewer has already earned; they stay unmasked.
     @FunctionalInterface
     public interface BlockVisibility {
         boolean isVisible(int x, int y, int z);
 
-        /**
-         * Whether any block of the box (inclusive corners) is earned. Implementations backed by a
-         * cell grid override this with a check per cell instead of per block.
-         */
+        // Whether any block of the box (inclusive corners) is earned. Implementations backed by a
+        // cell grid override this with a check per cell instead of per block.
         default boolean anyInBox(int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
             for (int x = minX; x <= maxX; x++) {
                 for (int z = minZ; z <= maxZ; z++) {
@@ -991,7 +995,7 @@ public final class NativeProtocol {
         }
     }
 
-    /** Drops unearned block entities below the ceiling; the client would still draw them. */
+    // Drops unearned block entities below the ceiling; the client would still draw them.
     private static void filterBlockEntities(Object chunkData, int[] ceilings, int chunkX, int chunkZ, BlockVisibility visible) {
         try {
             Object value = get(chunkData, "blockEntitiesData");
@@ -1017,17 +1021,17 @@ public final class NativeProtocol {
         }
     }
 
-    /** Masks raw chunk bytes; also used by the self-check. */
+    // Masks raw chunk bytes; also used by the self-check.
     public static byte[] maskChunkBuffer(Object factory, byte[] buffer, int sectionCount, int minY, int[] ceilings, java.util.function.IntFunction<Object> fakeStateFor) {
         return maskChunkBuffer(factory, buffer, sectionCount, minY, ceilings, fakeStateFor, 0, 0, null);
     }
 
-    /** Same as above, with chunk coordinates and the viewer's already-earned blocks. */
+    // Same as above, with chunk coordinates and the viewer's already-earned blocks.
     public static byte[] maskChunkBuffer(Object factory, byte[] buffer, int sectionCount, int minY, int[] ceilings, java.util.function.IntFunction<Object> fakeStateFor, int chunkX, int chunkZ, BlockVisibility visible) {
         return maskChunkBuffer(factory, buffer, sectionCount, minY, ceilings, ceilings, fakeStateFor, chunkX, chunkZ, visible, null);
     }
 
-    /** Rewrites hidden sections with the server's reader/writer and recalculates block counts. */
+    // Rewrites hidden sections with the server's reader/writer and recalculates block counts.
     public static byte[] maskChunkBuffer(Object factory, byte[] buffer, int sectionCount, int minY, int[] ceilings, int[] oreCeilings, java.util.function.IntFunction<Object> fakeStateFor, int chunkX, int chunkZ, BlockVisibility visible, java.util.function.Predicate<Object> sensitiveState) {
         ChunkFormat format = ChunkFormat.get();
         if (format == null || (format.requiresFactory && factory == null) || buffer == null) {
@@ -1050,6 +1054,9 @@ public final class NativeProtocol {
             target.release();
             return null;
         }
+        int[] maskTop = new int[256];
+        int[] oreTop = new int[256];
+        Object[] fakeByY = new Object[16];
         try {
             for (int section = 0; section < sectionCount; section++) {
                 int baseY = minY + section * 16;
@@ -1060,8 +1067,6 @@ public final class NativeProtocol {
 
                 // Masked range of each column in this section. Below maskTop everything is fake;
                 // between maskTop and oreTop only ores, containers and similar blocks are fake.
-                int[] maskTop = new int[256];
-                int[] oreTop = new int[256];
                 boolean fullyMasked = true;
                 boolean anyMasked = false;
                 for (int x = 0; x < 16; x++) {
@@ -1087,11 +1092,14 @@ public final class NativeProtocol {
                 }
 
                 if (anyMasked) {
+                    for (int offset = 0; offset < 16; offset++) {
+                        fakeByY[offset] = fakeStateFor.apply(baseY + offset);
+                    }
                     Object states = format.getStates.invoke(chunkSection);
                     // The single-value shortcut needs no earned blocks in this section.
                     if (fullyMasked && (visible == null || !anyVisible(visible, baseX, baseY, baseZ))) {
-                        Object fake = fakeStateFor.apply(baseY);
-                        if (fake != null && fake == fakeStateFor.apply(baseY + 15)) {
+                        Object fake = fakeByY[0];
+                        if (fake != null && fake == fakeByY[15]) {
                             // The whole section is one fake block: encode a single-value container.
                             Object single = format.newSingleValueContainer(
                                     fake, format.strategyField.get(states));
@@ -1099,12 +1107,12 @@ public final class NativeProtocol {
                             format.sectionRecalc.invoke(chunkSection);
                         } else {
                             maskBlocks(format, states, maskTop, oreTop, baseY, baseX, baseZ,
-                                    fakeStateFor, visible, sensitiveState);
+                                    fakeByY, visible, sensitiveState);
                             format.sectionRecalc.invoke(chunkSection);
                         }
                     } else {
                         maskBlocks(format, states, maskTop, oreTop, baseY, baseX, baseZ,
-                                fakeStateFor, visible, sensitiveState);
+                                fakeByY, visible, sensitiveState);
                         format.sectionRecalc.invoke(chunkSection);
                     }
                 }
@@ -1128,16 +1136,14 @@ public final class NativeProtocol {
         return result;
     }
 
-    /** Whether the viewer has already earned any block in this section. */
+    // Whether the viewer has already earned any block in this section.
     private static boolean anyVisible(BlockVisibility visible, int baseX, int baseY, int baseZ) {
         return visible.anyInBox(baseX, baseY, baseZ, baseX + 15, baseY + 15, baseZ + 15);
     }
 
-    /**
-     * Replaces each block below its column's ceiling with the fake block unless the viewer has
-     * already earned it.
-     */
-    private static void maskBlocks(ChunkFormat format, Object states, int[] maskTop, int[] oreTop, int baseY, int baseX, int baseZ, java.util.function.IntFunction<Object> fakeStateFor, BlockVisibility visible, java.util.function.Predicate<Object> sensitiveState)
+    // Replaces each block below its column's ceiling with the fake block unless the viewer has
+    // already earned it.
+    private static void maskBlocks(ChunkFormat format, Object states, int[] maskTop, int[] oreTop, int baseY, int baseX, int baseZ, Object[] fakeByY, BlockVisibility visible, java.util.function.Predicate<Object> sensitiveState)
             throws Throwable {
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
@@ -1147,7 +1153,7 @@ public final class NativeProtocol {
                     if (visible != null && visible.isVisible(baseX + x, worldY, baseZ + z)) {
                         continue;
                     }
-                    Object fake = fakeStateFor.apply(worldY);
+                    Object fake = fakeByY[worldY - baseY];
                     if (fake == null) {
                         continue;
                     }
@@ -1171,7 +1177,7 @@ public final class NativeProtocol {
                     if (state == null || !sensitiveState.test(state)) {
                         continue;
                     }
-                    Object fake = fakeStateFor.apply(worldY);
+                    Object fake = fakeByY[worldY - baseY];
                     if (fake != null) {
                         if (format.getAndSetHandle != null) {
                             Object ignored = (Object) format.getAndSetHandle.invokeExact(states, x, worldY - baseY, z, fake);

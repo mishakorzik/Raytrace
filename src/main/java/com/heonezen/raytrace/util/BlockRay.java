@@ -13,51 +13,22 @@ public final class BlockRay {
     public static int countOccluding(World world, double ex, double ey, double ez, double tx, double ty, double tz, int stopAfter) {
         return countOccluding(world, ex, ey, ez, tx, ty, tz, stopAfter, null, 0, false, 0);
     }
-    /**
-     * Same as above, but lets a ray pass up to {@code allowedCornerSkips} thin corner clips.
-     * This makes partially visible entities appear smoothly without opening a path through
-     * a wall running along a corner.
-     */
+    // Same as above, but lets a ray pass up to {@code allowedCornerSkips} thin corner clips.
+    // This makes partially visible entities appear smoothly without opening a path through
+    // a wall running along a corner.
     public static int countOccluding(World world, double ex, double ey, double ez, double tx, double ty, double tz, int stopAfter, int allowedCornerSkips) {
         return countOccluding(world, ex, ey, ez, tx, ty, tz, stopAfter, null, 0, false, allowedCornerSkips);
     }
 
-    // Netty-safe variant of {@link #countOccluding}.
-    public static int countOccludingNms(World world, double ex, double ey, double ez, double tx, double ty, double tz, int stopAfter) {
-        return countOccluding(world, ex, ey, ez, tx, ty, tz, stopAfter, null, 0, true, 0);
-    }
-
-    // Netty-safe variant with corner clipping.
-    public static int countOccludingNms(World world, double ex, double ey, double ez, double tx, double ty, double tz, int stopAfter, int allowedCornerSkips) {
-        return countOccluding(world, ex, ey, ez, tx, ty, tz, stopAfter, null, 0, true, allowedCornerSkips);
-    }
-
-    // Netty-safe cell-reporting variant with corner clipping.
-    public static int countOccludingNms(World world, double ex, double ey, double ez, double tx, double ty, double tz, int stopAfter, CellVisitor visitor, int gridSize, int allowedCornerSkips) {
-        return countOccluding(world, ex, ey, ez, tx, ty, tz, stopAfter, visitor, gridSize, true, allowedCornerSkips);
-    }
-
-    /**
-     * Fastest safe variant for the engine. {@code packetThread} callers (Netty) must never touch
-     * Bukkit, so they only use direct server reads; region-thread callers use the same direct
-     * reads when they are available and fall back to Bukkit otherwise.
-     */
+    // Fastest safe variant for the engine. {@code packetThread} callers (Netty) must never touch
+    // Bukkit, so they only use direct server reads; region-thread callers use the same direct
+    // reads when they are available and fall back to Bukkit otherwise.
     public static int countOccludingAuto(World world, double ex, double ey, double ez,
                                          double tx, double ty, double tz, int stopAfter,
                                          CellVisitor visitor, int gridSize, int allowedCornerSkips,
                                          boolean packetThread) {
         boolean nms = packetThread || NmsBlockReader.available();
         return countOccluding(world, ex, ey, ez, tx, ty, tz, stopAfter, visitor, gridSize, nms, allowedCornerSkips);
-    }
-
-    // Counts solid blocks and reports every grid cell the line passes through.
-    public static int countOccluding(World world, double ex, double ey, double ez, double tx, double ty, double tz, int stopAfter, CellVisitor visitor, int gridSize) {
-        return countOccluding(world, ex, ey, ez, tx, ty, tz, stopAfter, visitor, gridSize, false, 0);
-    }
-
-    // Cell-reporting variant with corner clipping.
-    public static int countOccluding(World world, double ex, double ey, double ez, double tx, double ty, double tz, int stopAfter, CellVisitor visitor, int gridSize, int allowedCornerSkips) {
-        return countOccluding(world, ex, ey, ez, tx, ty, tz, stopAfter, visitor, gridSize, false, allowedCornerSkips);
     }
 
     private static int countOccluding(World world, double ex, double ey, double ez, double tx, double ty, double tz, int stopAfter, CellVisitor visitor, int gridSize, boolean nmsSafe, int allowedCornerSkips) {
@@ -146,7 +117,12 @@ public final class BlockRay {
                 }
                 boolean occluding;
                 if (nmsSafe) {
-                    occluding = NmsBlockReader.isOccluding(nmsChunk, x & 15, y, z & 15);
+                    // Partial blocks (stairs, slabs) answer "canOcclude" incorrectly for a ray:
+                    // canOcclude() is true even though the voxel is not full, so the check must
+                    // go through the actual shape to let rays through the missing part (the
+                    // stair notch, the empty half of a slab) while blocking the solid step.
+                    occluding = NmsBlockReader.occludesRay(nmsChunk, x, y, z, ex, ey, ez,
+                            tx, ty, tz);
                 } else {
                     occluding = chunk != null && chunk.getBlock(x & 15, y, z & 15).getType().isOccluding();
                 }
@@ -194,11 +170,9 @@ public final class BlockRay {
             }
         }
     }
-    /**
-     * Checks the two blocks diagonally opposite the current voxel around the edge the ray
-     * is crossing. A single block corner is open; a wall corner has a solid diagonal
-     * neighbour and is not.
-     */
+    // Checks the two blocks diagonally opposite the current voxel around the edge the ray
+    // is crossing. A single block corner is open; a wall corner has a solid diagonal
+    // neighbour and is not.
     private static boolean isOpenCorner(World world, boolean nmsSafe, Object source,
                                         int x, int y, int z, int entryAxis, int exitAxis,
                                         int stepX, int stepY, int stepZ,
@@ -206,22 +180,53 @@ public final class BlockRay {
         if (entryAxis < 0 || entryAxis == exitAxis) {
             return false;
         }
-        int[] position = {x, y, z};
-        int[] steps = {stepX, stepY, stepZ};
-        if (steps[entryAxis] == 0 || steps[exitAxis] == 0) {
+        int entryStep = axisValue(entryAxis, stepX, stepY, stepZ);
+        int exitStep = axisValue(exitAxis, stepX, stepY, stepZ);
+        if (entryStep == 0 || exitStep == 0) {
             return false;
         }
 
-        int[] first = position.clone();
-        first[entryAxis] -= steps[entryAxis];
-        first[exitAxis] += steps[exitAxis];
-        int[] second = position.clone();
-        second[entryAxis] += steps[entryAxis];
-        second[exitAxis] -= steps[exitAxis];
-        return !isOccludingAt(world, nmsSafe, source, first[0], first[1], first[2],
+        int firstX = x;
+        int firstY = y;
+        int firstZ = z;
+        int secondX = x;
+        int secondY = y;
+        int secondZ = z;
+        switch (entryAxis) {
+            case 0 -> {
+                firstX -= entryStep;
+                secondX += entryStep;
+            }
+            case 1 -> {
+                firstY -= entryStep;
+                secondY += entryStep;
+            }
+            default -> {
+                firstZ -= entryStep;
+                secondZ += entryStep;
+            }
+        }
+        switch (exitAxis) {
+            case 0 -> {
+                firstX += exitStep;
+                secondX -= exitStep;
+            }
+            case 1 -> {
+                firstY += exitStep;
+                secondY -= exitStep;
+            }
+            default -> {
+                firstZ += exitStep;
+                secondZ -= exitStep;
+            }
+        }
+        return !isOccludingAt(world, nmsSafe, source, firstX, firstY, firstZ,
                 chunk, nmsChunk, chunkX, chunkZ)
-                && !isOccludingAt(world, nmsSafe, source, second[0], second[1], second[2],
+                && !isOccludingAt(world, nmsSafe, source, secondX, secondY, secondZ,
                 chunk, nmsChunk, chunkX, chunkZ);
+    }
+    private static int axisValue(int axis, int valueX, int valueY, int valueZ) {
+        return axis == 0 ? valueX : (axis == 1 ? valueY : valueZ);
     }
     private static boolean isOccludingAt(World world, boolean nmsSafe, Object source, int x, int y, int z, Chunk chunk, Object nmsChunk, int chunkX, int chunkZ) {
         if (y < world.getMinHeight() || y >= world.getMaxHeight()) {

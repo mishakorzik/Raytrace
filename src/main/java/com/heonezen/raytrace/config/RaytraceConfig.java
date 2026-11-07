@@ -3,48 +3,140 @@ package com.heonezen.raytrace.config;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.Plugin;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.logging.Level;
 
-/** Loads config.yml into immutable settings and reloads it on demand. */
+// Loads config.yml into immutable settings and reloads it on demand.
 public final class RaytraceConfig {
 
     private static final int MIN_GRID_SIZE = 1;
     private static final int MAX_BLOCK_GRID_SIZE = 16;
     private static final int MAX_ENTITY_GRID_SIZE = 9;
-    private static final int DEFAULT_BLOCK_GRID_SIZE = 10;
-    private static final int DEFAULT_ENTITY_GRID_SIZE = 5;
+    private static final int DEFAULT_BLOCK_GRID_SIZE = 8;
+    private static final int DEFAULT_ENTITY_GRID_SIZE = 4;
     private static final int DEFAULT_SURFACE_BUFFER = 8;
+
+    private static final List<String> DEFAULT_IMPORTANT_SOUNDS = List.of("explode", "explosion", "ender_dragon", "end_crystal", "wither", "end_portal", "beacon", "raid", "bell");
 
     private static final WorldSettings DISABLED = new WorldSettings(false, List.of(), false, false, false, false, false, DEFAULT_SURFACE_BUFFER);
 
     private final Plugin plugin;
 
+    // Whether a configuration has been applied at least once.
+    private volatile boolean loaded;
+
     private volatile Map<String, WorldSettings> worlds = Map.of();
     private volatile boolean hideEffects = true;
-    private volatile double farSoundDistance = 24.0;
-    private volatile GridSettings grids = new GridSettings(new GridSettings.BlockGrid(10, 2, 2L, 1.2, 6.0, 4.0, 80_000, 1_600, 20_000, 1_000L), new GridSettings.EntityGrid(5, 4L, 128.0, 1));
+    private volatile double farSoundDistance = 48.0;
+    private volatile String[] importantSounds = DEFAULT_IMPORTANT_SOUNDS.toArray(new String[0]);
+    private volatile GridSettings grids = new GridSettings(new GridSettings.BlockGrid(8, 2, 2L, 1.2, 6.0, 4.0, 80_000, 2_600, 40_000, 1_000L), new GridSettings.EntityGrid(4, 2L, 128.0, 1));
 
     public RaytraceConfig(Plugin plugin) {
         this.plugin = plugin;
         reload();
     }
 
-    public void reload() {
-        plugin.saveDefaultConfig();
-        plugin.reloadConfig();
-        FileConfiguration config = plugin.getConfig();
+    /**
+     * Builds the settings from an already loaded configuration, without touching the plugin's
+     * data folder. The diagnostics use this so they can run before the plugin has one.
+     */
+    public RaytraceConfig(Plugin plugin, FileConfiguration config) {
+        this.plugin = plugin;
+        apply(config);
+    }
 
-        this.worlds = parseWorlds(config);
-        this.hideEffects = config.getBoolean("hide-effects", true);
-        this.farSoundDistance = Math.max(4.0, config.getDouble("far-sound-distance", 24.0));
-        this.grids = parseGrids(config);
+    public boolean reload() {
+        plugin.saveDefaultConfig();
+        FileConfiguration config;
+        try {
+            // The file is parsed on its own first. Bukkit swallows a YAML error and hands back an
+            // empty config merged with the jar defaults, which would silently switch the
+            // protection off in every world.
+            new YamlConfiguration().load(new File(plugin.getDataFolder(), "config.yml"));
+            plugin.reloadConfig();
+            config = plugin.getConfig();
+        } catch (IOException | InvalidConfigurationException exception) {
+            plugin.getLogger().log(Level.SEVERE, "config.yml cannot be read: " + exception.getMessage(), exception);
+            if (loaded) {
+                plugin.getLogger().severe("The previous settings stay active.");
+                return false;
+            }
+            // First load: run on the bundled defaults rather than leaving every world unprotected.
+            config = bundledDefaults();
+            if (config == null) {
+                return false;
+            }
+            plugin.getLogger().severe("Raytrace runs on its built-in default settings until config.yml is fixed.");
+        }
+
+        return apply(config);
+    }
+
+    // Parses everything first, so a malformed reload never leaves the plugin with a half-updated
+    // mix of old and new settings.
+    private boolean apply(FileConfiguration config) {
+        // contains(path, true) ignores the jar defaults, so only a section the file really has counts.
+        if (!worlds.isEmpty() && !config.contains("worlds", true)) {
+            plugin.getLogger().warning("config.yml has no 'worlds' section; the previous settings stay active.");
+            return false;
+        }
+
+        Map<String, WorldSettings> parsedWorlds = parseWorlds(config);
+        boolean parsedHideEffects = config.getBoolean("hide-effects", true);
+        double parsedFarSoundDistance = clamp(config.getDouble("far-sound-distance", 48.0), 1.0, 128.0);
+        String[] parsedImportantSounds = parseImportantSounds(config);
+        GridSettings parsedGrids = parseGrids(config);
+
+        this.worlds = parsedWorlds;
+        this.hideEffects = parsedHideEffects;
+        this.farSoundDistance = parsedFarSoundDistance;
+        this.importantSounds = parsedImportantSounds;
+        this.grids = parsedGrids;
+        this.loaded = true;
+        return true;
+    }
+
+    // The config.yml that ships inside the jar, or null if it cannot be read.
+    private FileConfiguration bundledDefaults() {
+        try (InputStream stream = plugin.getResource("config.yml")) {
+            if (stream == null) {
+                return null;
+            }
+            return YamlConfiguration.loadConfiguration(new InputStreamReader(stream, StandardCharsets.UTF_8));
+        } catch (IOException | RuntimeException exception) {
+            return null;
+        }
+    }
+
+    private static String[] parseImportantSounds(FileConfiguration config) {
+        if (!config.contains("important-sounds")) {
+            return DEFAULT_IMPORTANT_SOUNDS.toArray(new String[0]);
+        }
+        List<String> result = new ArrayList<>();
+        for (String entry : config.getStringList("important-sounds")) {
+            if (entry == null) {
+                continue;
+            }
+            String value = entry.trim().toLowerCase(Locale.ROOT);
+            if (!value.isEmpty()) {
+                result.add(value);
+            }
+        }
+        return result.toArray(new String[0]);
     }
 
     private Map<String, WorldSettings> parseWorlds(FileConfiguration config) {
@@ -99,74 +191,51 @@ public final class RaytraceConfig {
         ConfigurationSection gridsSection = config.getConfigurationSection("grids");
         ConfigurationSection blocks = gridsSection == null ? null : gridsSection.getConfigurationSection("blocks");
         ConfigurationSection entities = gridsSection == null ? null : gridsSection.getConfigurationSection("entities");
-        ConfigurationSection legacyPerformance = config.getConfigurationSection("performance");
 
-        int blockSize = clamp(intValue(blocks, "size", config, "grid-size", DEFAULT_BLOCK_GRID_SIZE), MIN_GRID_SIZE, MAX_BLOCK_GRID_SIZE);
-        int entitySize = clamp(intValue(entities, "size", null, null, DEFAULT_ENTITY_GRID_SIZE), MIN_GRID_SIZE, MAX_ENTITY_GRID_SIZE);
-
-        // New configs use ticks. Old configs used milliseconds, so convert the legacy key
-        // once instead of silently treating 50 as 50 ticks.
-        long blockScanTicks = longValue(blocks, "scan-ticks", null, null, -1L);
-        if (blockScanTicks < 1L) {
-            if (blocks != null && blocks.contains("refresh-interval-millis")) {
-                long legacyMillis = longValue(blocks, "refresh-interval-millis", null, null, 100L);
-                blockScanTicks = Math.max(1L, (legacyMillis + 49L) / 50L);
-            } else {
-                blockScanTicks = 2L;
-            }
-        }
-        blockScanTicks = clamp(blockScanTicks, 1L, 20L);
-
+        int blockSize = clamp(intValue(blocks, "size", DEFAULT_BLOCK_GRID_SIZE), MIN_GRID_SIZE, MAX_BLOCK_GRID_SIZE);
+        int entitySize = clamp(intValue(entities, "size", DEFAULT_ENTITY_GRID_SIZE), MIN_GRID_SIZE, MAX_ENTITY_GRID_SIZE);
+        long blockScanTicks = clamp(longValue(blocks, "scan-ticks", 2L), 1L, 20L);
         return new GridSettings(
                 new GridSettings.BlockGrid(
                         blockSize,
-                        Math.max(0, intValue(blocks, "occlusion-grace-blocks", config, "occlusion-grace-blocks", 2)),
+                        clamp(intValue(blocks, "occlusion-grace-blocks", 2), 1, 8),
                         blockScanTicks,
-                        Math.max(0.0, doubleValue(blocks, "move-threshold-blocks", config, "move-threshold-blocks", 1.2)),
-                        Math.max(0.0, doubleValue(blocks, "yaw-threshold-degrees", config, "yaw-threshold-degrees", 6.0)),
-                        Math.max(0.0, doubleValue(blocks, "pitch-threshold-degrees", config, "pitch-threshold-degrees", 4.0)),
-                        clamp(intValue(blocks, "max-steps-per-scan", legacyPerformance, "max-steps-per-scan", 80_000), 1_000, 1_000_000),
-                        clamp(intValue(blocks, "target-total-rays", legacyPerformance, "target-total-rays", 1_600), 64, 50_000),
-                        clamp(intValue(blocks, "max-revealed-blocks-per-scan", legacyPerformance, "max-revealed-blocks-per-scan", 20_000), 256, 1_000_000),
-                        clamp(longValue(blocks, "max-scan-micros", null, null, 1_000L), 100L, 20_000L)
+                        clamp(doubleValue(blocks, "move-threshold-blocks", 1.2), 0.1, 16.0),
+                        clamp(doubleValue(blocks, "yaw-threshold-degrees", 6.0), 0.1, 120.0),
+                        clamp(doubleValue(blocks, "pitch-threshold-degrees", 4.0), 0.1, 120.0),
+                        clamp(intValue(blocks, "max-steps-per-scan", 80000), 1000, 1000000),
+                        clamp(intValue(blocks, "target-total-rays", 2600), 64, 10000),
+                        clamp(intValue(blocks, "max-revealed-blocks-per-scan", 40000), 256, 1000000),
+                        clamp(longValue(blocks, "max-scan-micros", 1000L), 100L, 20000L)
                 ),
                 new GridSettings.EntityGrid(
                         entitySize,
-                        clamp(longValue(entities, "scan-ticks", legacyPerformance, "entity-scan-interval-ticks", 4L), 1L, 40L),
-                        clamp(doubleValue(entities, "scan-radius-blocks", legacyPerformance, "entity-scan-radius-blocks", 128.0), 8.0, 200.0),
+                        clamp(longValue(entities, "scan-ticks", 2L), 1L, 20L),
+                        clamp(doubleValue(entities, "scan-radius-blocks", 128.0), 8.0, 200.0),
                         // Entity rays get one grace block by default; terrain reveal has its own
                         // occlusion-grace-blocks setting.
-                        clamp(intValue(entities, "occlusion-blocks", config, "entity-occlusion-blocks", 1), 1, 8)
+                        clamp(intValue(entities, "occlusion-blocks", 1), 1, 8)
                 )
         );
     }
 
-    private static int intValue(ConfigurationSection primary, String key, ConfigurationSection fallback, String fallbackKey, int defaultValue) {
-        if (primary != null && primary.contains(key)) {
-            return primary.getInt(key, defaultValue);
-        }
-        if (fallback != null && fallbackKey != null && fallback.contains(fallbackKey)) {
-            return fallback.getInt(fallbackKey, defaultValue);
+    private static int intValue(ConfigurationSection section, String key, int defaultValue) {
+        if (section != null && section.contains(key)) {
+            return section.getInt(key, defaultValue);
         }
         return defaultValue;
     }
 
-    private static long longValue(ConfigurationSection primary, String key, ConfigurationSection fallback, String fallbackKey, long defaultValue) {
-        if (primary != null && primary.contains(key)) {
-            return primary.getLong(key, defaultValue);
-        }
-        if (fallback != null && fallbackKey != null && fallback.contains(fallbackKey)) {
-            return fallback.getLong(fallbackKey, defaultValue);
+    private static long longValue(ConfigurationSection section, String key, long defaultValue) {
+        if (section != null && section.contains(key)) {
+            return section.getLong(key, defaultValue);
         }
         return defaultValue;
     }
 
-    private static double doubleValue(ConfigurationSection primary, String key, ConfigurationSection fallback, String fallbackKey, double defaultValue) {
-        if (primary != null && primary.contains(key)) {
-            return primary.getDouble(key, defaultValue);
-        }
-        if (fallback != null && fallbackKey != null && fallback.contains(fallbackKey)) {
-            return fallback.getDouble(fallbackKey, defaultValue);
+    private static double doubleValue(ConfigurationSection section, String key, double defaultValue) {
+        if (section != null && section.contains(key)) {
+            return section.getDouble(key, defaultValue);
         }
         return defaultValue;
     }
@@ -193,6 +262,10 @@ public final class RaytraceConfig {
 
     public double farSoundDistance() {
         return farSoundDistance;
+    }
+
+    public String[] importantSounds() {
+        return importantSounds;
     }
 
     public GridSettings.BlockGrid blockGrid() {

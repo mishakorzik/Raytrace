@@ -1,5 +1,6 @@
 package com.heonezen.raytrace;
 
+import com.heonezen.raytrace.api.RaytraceAPI;
 import com.heonezen.raytrace.command.RaytraceCommand;
 import com.heonezen.raytrace.config.RaytraceConfig;
 import com.heonezen.raytrace.diagnostics.ChunkMaskSelfTest;
@@ -16,7 +17,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.List;
 
-/** Packet-level anti-ESP and anti-freecam protection for Paper and Folia. */
+// Packet-level anti-ESP and anti-freecam protection for Paper and Folia.
 public final class RaytracePlugin extends JavaPlugin {
 
     private RaytraceConfig config;
@@ -33,17 +34,18 @@ public final class RaytracePlugin extends JavaPlugin {
         // (see RaytraceEngine#installNativeHandler).
         Bukkit.getPluginManager().registerEvents(new PlayerActivityListener(config, engine), this);
 
-        RaytraceCommand command = new RaytraceCommand(this, config, engine);
+        RaytraceCommand command = new RaytraceCommand(config, engine);
         PluginCommand pluginCommand = getCommand("raytrace");
         if (pluginCommand != null) {
             pluginCommand.setExecutor(command);
             pluginCommand.setTabCompleter(command);
         }
 
+        RaytraceAPI.setInstance(new RaytraceAPI(engine, config));
         engine.start();
         config.logSummary();
         getLogger().info("Raytrace enabled - packet-level ESP/freecam protection is active.");
-        
+
         // Printed on every start so logs always show which build is running.
         getLogger().info("Raytrace version " + getDescription().getVersion() + " (built " + buildStamp + ")");
 
@@ -68,6 +70,9 @@ public final class RaytracePlugin extends JavaPlugin {
             getLogger().info("Raytrace entity-spawn interception check passed.");
         }
 
+        if (!com.heonezen.raytrace.util.NmsBlockReader.shapesAvailable()) {
+            getLogger().warning("Raytrace: block-shape raycast unavailable (" + com.heonezen.raytrace.util.NmsBlockReader.shapeFailure() + "); partial blocks use coarse occlusion.");
+        }
         String bundleProblem = engine.bundleSupportProblem();
         if (bundleProblem != null) {
             getLogger().warning("Raytrace cannot look inside packet bundles: " + bundleProblem + ". Entity spawns are sent inside bundles, so hidden entities may be visible for a moment before the periodic scan removes them.");
@@ -78,7 +83,7 @@ public final class RaytracePlugin extends JavaPlugin {
         runSelfTestLater();
     }
 
-    /** Runs the built-in self-check shortly after startup, once block mappings are loaded. */
+    // Runs the built-in self-check shortly after startup, once block mappings are loaded.
     private void runSelfTestLater() {
         Bukkit.getGlobalRegionScheduler().runDelayed(this, scheduledTask -> {
             try {
@@ -120,7 +125,7 @@ public final class RaytracePlugin extends JavaPlugin {
         }, 100L);
     }
 
-    /** Encodes, masks and decodes a real chunk on the region that owns it. */
+    // Encodes, masks and decodes a real chunk on the region that owns it.
     private void runChunkMaskSelfTest() {
         try {
             World testWorld = null;
@@ -165,6 +170,7 @@ public final class RaytracePlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        RaytraceAPI.setInstance(null);
         if (engine != null) {
             engine.stop();
         }

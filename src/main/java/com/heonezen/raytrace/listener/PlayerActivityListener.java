@@ -77,11 +77,9 @@ public final class PlayerActivityListener implements Listener {
         revealIfMasked(event.getPlayer(), event.getBlock());
     }
 
-    /**
-     * A player breaking or placing a block in hidden terrain must always see the true result of
-     * their own action, so that exact block is force-revealed immediately rather than waiting
-     * for the next reveal-scan (which may not trigger at all if they are standing still).
-     */
+    // A player breaking or placing a block in hidden terrain must always see the true result of
+    // their own action, so that exact block is force-revealed immediately rather than waiting
+    // for the next reveal-scan (which may not trigger at all if they are standing still).
     private void revealIfMasked(Player player, Block block) {
         World world = block.getWorld();
         WorldSettings worldSettings = config.worldSettings(world);

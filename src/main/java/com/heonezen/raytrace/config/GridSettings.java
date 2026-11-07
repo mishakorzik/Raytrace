@@ -1,9 +1,9 @@
 package com.heonezen.raytrace.config;
 
-/** The two independent grids used by the scanner. */
+// The two independent grids used by the scanner.
 public record GridSettings(BlockGrid blocks, EntityGrid entities) {
 
-    /** Terrain grid and its scan limits. */
+    // Terrain grid and its scan limits.
     public record BlockGrid(
             int size,
             int occlusionGraceBlocks,
@@ -18,7 +18,7 @@ public record GridSettings(BlockGrid blocks, EntityGrid entities) {
     ) {
     }
 
-    /** Entity silhouette grid, scan timing and the entity-specific ray allowance. */
+    // Entity silhouette grid, scan timing and the entity-specific ray allowance.
     public record EntityGrid(
             int size,
             long scanIntervalTicks,

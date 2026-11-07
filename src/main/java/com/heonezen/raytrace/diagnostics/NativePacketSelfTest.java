@@ -9,18 +9,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Checks that block-change packets are copied per player without touching the shared original.
- * Needs a live server because the packet and block-state classes only exist there.
- */
+// Checks that block-change packets are copied per player without touching the shared original.
+// Needs a live server because the packet and block-state classes only exist there.
 public final class NativePacketSelfTest {
 
     private final List<Result> results = new ArrayList<>();
-
     private NativePacketSelfTest() {}
-
     public record Result(String name, boolean passed, String detail) {}
-
     public static List<Result> run() {
         NativePacketSelfTest test = new NativePacketSelfTest();
         try {
@@ -40,7 +35,6 @@ public final class NativePacketSelfTest {
         }
         return List.copyOf(test.results);
     }
-
     private void testBlockUpdateCopy() throws ReflectiveOperationException {
         Class<?> blockPosClass = Class.forName("net.minecraft.core.BlockPos");
         Object position = blockPosClass.getConstructor(int.class, int.class, int.class).newInstance(1, 2, 3);
@@ -57,7 +51,6 @@ public final class NativePacketSelfTest {
                 && NativeProtocol.get(copy, "pos") == position;
         results.add(new Result("single block update is copied per player and the original is untouched", passed, passed ? "" : "original=" + NativeProtocol.get(original, "blockState") + ", copy=" + (copy == null ? "null" : NativeProtocol.get(copy, "blockState"))));
     }
-
     private void testSectionUpdateCopy() throws ReflectiveOperationException {
         Class<?> sectionPosClass = Class.forName("net.minecraft.core.SectionPos");
         Object sectionPos = sectionPosClass.getMethod("of", int.class, int.class, int.class).invoke(null, 0, 0, 0);
@@ -107,8 +100,7 @@ public final class NativePacketSelfTest {
         boolean independent = otherCopy != null && otherCopy != copy && matchesPattern(copyStates, positions, deepslate, stone, 0) && matchesPattern(otherStates, positions, deepslate, stone, 1);
         results.add(new Result("two players receive independent batched copies", independent, independent ? "" : "first=" + copyStates + ", second=" + otherStates));
     }
-
-    /** Checks every position against the pattern: deepslate for one parity, stone for the other. */
+    // Checks every position against the pattern: deepslate for one parity, stone for the other.
     private static boolean matchesPattern(Map<Short, Object> states, short[] positions, Object deepslate, Object stone, int deepslateParity) {
         for (int i = 0; i < positions.length; i++) {
             Object expected = (i & 1) == deepslateParity ? deepslate : stone;
@@ -118,18 +110,14 @@ public final class NativePacketSelfTest {
         }
         return true;
     }
-
     private void testRemoveEntityIds() throws ReflectiveOperationException {
-        Class<?> packetClass = Class.forName(
-                "net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket");
+        Class<?> packetClass = Class.forName("net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket");
         int[] expected = {17, 42};
-        Object packet = packetClass.getConstructor(int[].class)
-                .newInstance((Object) expected);
+        Object packet = packetClass.getConstructor(int[].class).newInstance((Object) expected);
         int[] actual = NativeProtocol.removeEntityIds(packet);
         boolean passed = Arrays.equals(actual, expected);
         results.add(new Result("remove-entities ids are readable on this server version", passed, passed ? "" : "expected=" + Arrays.toString(expected) + ", actual=" + Arrays.toString(actual)));
     }
-
     private static Map<Short, Object> statesByPosition(Object packet) {
         if (packet == null) {
             return Map.of();
@@ -142,7 +130,6 @@ public final class NativePacketSelfTest {
         }
         return result;
     }
-
     private static Object blockState(String name) throws ReflectiveOperationException {
         Object block = NativeProtocol.staticField("net.minecraft.world.level.block.Blocks", name);
         return block.getClass().getMethod("defaultBlockState").invoke(block);

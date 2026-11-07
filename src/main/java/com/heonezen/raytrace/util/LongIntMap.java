@@ -9,9 +9,7 @@ import java.util.Arrays;
  * every cell a ray touched.
  */
 public final class LongIntMap {
-    /** Returned by {@link #get} for a missing key. */
-    public static final int ABSENT = Integer.MIN_VALUE;
-    /** Receives every entry of the map. */
+    // Receives every entry of the map.
     @FunctionalInterface
     public interface Visitor {
         void visit(long key, int value);
@@ -23,9 +21,6 @@ public final class LongIntMap {
     private int size;
     private int mask;
 
-    public LongIntMap() {
-        this(256);
-    }
     public LongIntMap(int expected) {
         int capacity = 16;
         while (capacity < expected * 2) {
@@ -40,13 +35,10 @@ public final class LongIntMap {
         mask = capacity - 1;
         size = 0;
     }
-    public int size() {
-        return size;
-    }
     public boolean isEmpty() {
         return size == 0;
     }
-    /** Forgets every entry but keeps the allocated tables for reuse. */
+    // Forgets every entry but keeps the allocated tables for reuse.
     public void clear() {
         if (size == 0) {
             return;
@@ -61,19 +53,6 @@ public final class LongIntMap {
     private static int hash(long key) {
         long h = key * 0x9E3779B97F4A7C15L;
         return (int) (h ^ (h >>> 32));
-    }
-    public int get(long key) {
-        int index = hash(key) & mask;
-        while (used[index]) {
-            if (keys[index] == key) {
-                return values[index];
-            }
-            index = (index + 1) & mask;
-        }
-        return ABSENT;
-    }
-    public boolean containsKey(long key) {
-        return get(key) != ABSENT;
     }
     public void put(long key, int value) {
         int index = hash(key) & mask;
@@ -91,7 +70,7 @@ public final class LongIntMap {
             grow();
         }
     }
-    /** Stores {@code value} unless the key already holds a smaller or equal one. */
+    // Stores {@code value} unless the key already holds a smaller or equal one.
     public void putMin(long key, int value) {
         int index = hash(key) & mask;
         while (used[index]) {

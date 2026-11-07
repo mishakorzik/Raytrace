@@ -15,7 +15,7 @@ import java.util.UUID;
  * are bound once as method handles, so a snapshot costs a handful of direct calls instead of a
  * dozen reflective ones.
  */
-public record EntitySnapshot(UUID uuid, int entityId, double x, double y, double z, double eyeY, double width, double height, EntityKind kind, boolean valid) {
+public record EntitySnapshot(UUID uuid, int entityId, double x, double y, double z, double width, double height, EntityKind kind, boolean valid) {
 
     private static final MethodType OBJ_TO_OBJ = MethodType.methodType(Object.class, Object.class);
     private static final MethodType OBJ_TO_INT = MethodType.methodType(int.class, Object.class);
@@ -29,7 +29,6 @@ public record EntitySnapshot(UUID uuid, int entityId, double x, double y, double
     private static final MethodHandle GET_X = handle(NMS_ENTITY, OBJ_TO_DOUBLE, "getX");
     private static final MethodHandle GET_Y = handle(NMS_ENTITY, OBJ_TO_DOUBLE, "getY");
     private static final MethodHandle GET_Z = handle(NMS_ENTITY, OBJ_TO_DOUBLE, "getZ");
-    private static final MethodHandle GET_EYE_Y = handle(NMS_ENTITY, OBJ_TO_DOUBLE, "getEyeY");
     private static final MethodHandle GET_WIDTH = handle(NMS_ENTITY, OBJ_TO_DOUBLE, "getBbWidth", "getWidth");
     private static final MethodHandle GET_HEIGHT = handle(NMS_ENTITY, OBJ_TO_DOUBLE, "getBbHeight", "getHeight");
     private static final MethodHandle IS_REMOVED = handle(NMS_ENTITY, OBJ_TO_BOOL, "isRemoved");
@@ -37,7 +36,7 @@ public record EntitySnapshot(UUID uuid, int entityId, double x, double y, double
 
     private static final boolean AVAILABLE = NMS_ENTITY != null && GET_ID != null && GET_UUID != null && GET_X != null && GET_Y != null && GET_Z != null && GET_WIDTH != null && GET_HEIGHT != null;
 
-    /** Marks a class that has no raw-handle accessor, since a ClassValue should not hold null. */
+    // Marks a class that has no raw-handle accessor, since a ClassValue should not hold null.
     private static final MethodHandle NONE = MethodHandles.constant(Object.class, null);
 
     private static final ClassValue<MethodHandle> RAW_METHOD = new ClassValue<>() {
@@ -74,7 +73,7 @@ public record EntitySnapshot(UUID uuid, int entityId, double x, double y, double
         }
     };
 
-    /** The server-side entity object behind a Bukkit entity, or null. */
+    // The server-side entity object behind a Bukkit entity, or null.
     public static Object handleOf(Entity entity) {
         if (entity == null || NMS_ENTITY == null) {
             return null;
@@ -92,7 +91,7 @@ public record EntitySnapshot(UUID uuid, int entityId, double x, double y, double
         }
     }
 
-    /** Reads a snapshot, or returns {@code null} when the server classes do not match. */
+    // Reads a snapshot, or returns {@code null} when the server classes do not match.
     public static EntitySnapshot read(Entity entity) {
         if (!AVAILABLE || entity == null) {
             return null;
@@ -104,7 +103,7 @@ public record EntitySnapshot(UUID uuid, int entityId, double x, double y, double
         return readHandle(handle);
     }
 
-    /** Reads a snapshot from the server-side entity object directly. */
+    // Reads a snapshot from the server-side entity object directly.
     public static EntitySnapshot readHandle(Object handle) {
         if (!AVAILABLE || handle == null) {
             return null;
@@ -117,16 +116,12 @@ public record EntitySnapshot(UUID uuid, int entityId, double x, double y, double
             double z = (double) GET_Z.invokeExact(handle);
             double height = (double) GET_HEIGHT.invokeExact(handle);
             double width = (double) GET_WIDTH.invokeExact(handle);
-            double eyeY = GET_EYE_Y != null ? (double) GET_EYE_Y.invokeExact(handle) : y + Math.max(0.2, height) * 0.85;
             boolean removed = IS_REMOVED != null && (boolean) IS_REMOVED.invokeExact(handle);
             boolean alive = IS_ALIVE == null || (boolean) IS_ALIVE.invokeExact(handle);
-            return new EntitySnapshot(uuid, id, x, y, z, eyeY, width, height, EntityKinds.of(handle.getClass()), !removed && alive);
+            return new EntitySnapshot(uuid, id, x, y, z, width, height, EntityKinds.of(handle.getClass()), !removed && alive);
         } catch (Throwable throwable) {
             return null;
         }
-    }
-    public boolean player() {
-        return kind == EntityKind.PLAYER;
     }
     private static Class<?> load(String name) {
         try {

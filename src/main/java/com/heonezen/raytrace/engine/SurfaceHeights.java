@@ -1,6 +1,7 @@
 package com.heonezen.raytrace.engine;
 
 import com.heonezen.raytrace.config.WorldSettings;
+import com.heonezen.raytrace.util.NmsBlockReader;
 import org.bukkit.Chunk;
 import org.bukkit.HeightMap;
 import org.bukkit.Material;
@@ -13,14 +14,12 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
-/**
- * Lowers the configured masking ceiling to each column's real surface. Height maps are read via
- * NMS on the Netty thread; if unavailable, the flat ceiling is used. The motion height map
- * ignores leaves but counts fluids, so fluid columns fall back to the ocean floor.
- */
+// Lowers the configured masking ceiling to each column's real surface. Height maps are read via
+// NMS on the Netty thread; if unavailable, the flat ceiling is used. The motion height map
+// ignores leaves but counts fluids, so fluid columns fall back to the ocean floor.
 public final class SurfaceHeights {
 
-    /** Surface materials treated as soil: the walkable layer that stays real under the surface buffer. */
+    // Surface materials treated as soil: the walkable layer that stays real under the surface buffer.
     private static final Set<Material> SOFT_SURFACE_BLOCKS = Set.of(
             Material.DIRT,
             Material.GRASS_BLOCK,
@@ -42,13 +41,10 @@ public final class SurfaceHeights {
             Material.SOUL_SAND,
             Material.SOUL_SOIL);
 
-    private SurfaceHeights() {
-    }
+    private SurfaceHeights() {}
 
-    /**
-     * Whether a surface block is wood rather than terrain. Without this a tree trunk would become
-     * the column's surface and a fake-stone pillar would show under it.
-     */
+    // Whether a surface block is wood rather than terrain. Without this a tree trunk would become
+    // the column's surface and a fake-stone pillar would show under it.
     private static boolean isWoody(Material material) {
         if (material == null) {
             return false;
@@ -63,11 +59,9 @@ public final class SurfaceHeights {
                 || material == Material.CACTUS;
     }
 
-    /**
-     * Hard cutoff for one column. Everything below this Y is underground, so ores, containers
-     * and block entities are hidden there unless the viewer earned the cell. Unlike
-     * {@link #effectiveCeiling}, this never applies the soil surface buffer.
-     */
+    // Hard cutoff for one column. Everything below this Y is underground, so ores, containers
+    // and block entities are hidden there unless the viewer earned the cell. Unlike
+    // {@link #effectiveCeiling}, this never applies the soil surface buffer.
     public static int hardCeiling(World world, WorldSettings worldSettings, int x, int z) {
         int configuredCeiling = Math.min(worldSettings.maskCeilingY(), world.getMaxHeight());
         int minY = world.getMinHeight();
@@ -94,7 +88,7 @@ public final class SurfaceHeights {
         }
     }
 
-    /** Masking ceiling for one column: the Y at and above which nothing is masked. */
+    // Masking ceiling for one column: the Y at and above which nothing is masked.
     public static int effectiveCeiling(World world, WorldSettings worldSettings, int x, int z) {
         int configuredCeiling = Math.min(worldSettings.maskCeilingY(), world.getMaxHeight());
         int minY = world.getMinHeight();
@@ -153,10 +147,8 @@ public final class SurfaceHeights {
      */
     public record ChunkCeilings(int[] values, int[] oreValues, boolean fromTerrain) {}
 
-    /**
-     * Per-column ceilings indexed by {@code x * 16 + z}; packet height map first, then the loaded
-     * chunk. A flat fallback is never cached.
-     */
+    // Per-column ceilings indexed by {@code x * 16 + z}; packet height map first, then the loaded
+    // chunk. A flat fallback is never cached.
     public static ChunkCeilings ceilingsForChunk(World world, WorldSettings worldSettings, int chunkX, int chunkZ, Object chunkData) {
         int configuredCeiling = Math.min(worldSettings.maskCeilingY(), world.getMaxHeight());
         int minY = world.getMinHeight();
@@ -239,12 +231,12 @@ public final class SurfaceHeights {
         return new ChunkCeilings(ceilings, oreCeilings, readAny);
     }
 
-    /** Applies only the configured cap: the surface buffer never raises the hard cutoff. */
+    // Applies only the configured cap: the surface buffer never raises the hard cutoff.
     private static int resolveHardCeiling(int configuredCeiling, int minY, int surfaceY) {
         return Math.min(configuredCeiling, Math.max(surfaceY, minY));
     }
 
-    /** Applies the surface buffer and configured cap to one column whose surface Y is known. */
+    // Applies the surface buffer and configured cap to one column whose surface Y is known.
     private static int resolveCeiling(int configuredCeiling, int minY, int surfaceBuffer, Object chunk, int localX, int localZ, int surfaceY) {
         return resolveCeiling(configuredCeiling, minY, surfaceBuffer, Nms.isSoftSurface(chunk, localX, localZ, surfaceY, minY), surfaceY);
     }
@@ -261,9 +253,8 @@ public final class SurfaceHeights {
         return Math.min(configuredCeiling, Math.max(naturalCeiling, minY));
     }
 
-    /** The Bukkit-only variant of {@link #resolveCeiling}, for servers without reachable NMS. */
-    private static int resolveCeiling(int configuredCeiling, int minY, int surfaceBuffer,
-                                      java.util.function.BooleanSupplier softSurface, int surfaceY) {
+    // The Bukkit-only variant of {@link #resolveCeiling}, for servers without reachable NMS.
+    private static int resolveCeiling(int configuredCeiling, int minY, int surfaceBuffer, java.util.function.BooleanSupplier softSurface, int surfaceY) {
         int naturalCeiling;
         if (surfaceBuffer > 0 && softSurface.getAsBoolean()) {
             naturalCeiling = surfaceY - surfaceBuffer + 1;
@@ -273,10 +264,8 @@ public final class SurfaceHeights {
         return Math.min(configuredCeiling, Math.max(naturalCeiling, minY));
     }
 
-    /**
-     * Whether the surface is soil, checking the top block and a few blocks below it. Unknown
-     * states count as soil, which is safe.
-     */
+    // Whether the surface is soil, checking the top block and a few blocks below it. Unknown
+    // states count as soil, which is safe.
     private static boolean isSoftSurface(World world, int chunkX, int chunkZ, int x, int surfaceY, int z) {
         try {
             Chunk chunk = world.getChunkAt(chunkX, chunkZ);
@@ -301,15 +290,12 @@ public final class SurfaceHeights {
         }
     }
 
-    /**
-     * Reflective access to the server's chunk height maps and block states. There is no NMS compile
-     * dependency; any missing member degrades to the flat ceiling, and nothing here loads a chunk.
-     */
+    // Reflective access to the server's chunk height maps and block states. There is no NMS compile
+    // dependency; any missing member degrades to the flat ceiling, and nothing here loads a chunk.
     private static final class Nms {
 
         private static final Method GET_CHUNK_SOURCE;
         private static final Method GET_CHUNK_AT_IF_LOADED;
-        private static final Class<?> HEIGHTMAP_TYPES;
         private static final Object MOTION_BLOCKING_NO_LEAVES;
         private static final Object OCEAN_FLOOR;
         private static final Method HAS_PRIMED_HEIGHTMAP;
@@ -397,7 +383,6 @@ public final class SurfaceHeights {
             }
             GET_CHUNK_SOURCE = chunkSource;
             GET_CHUNK_AT_IF_LOADED = chunkAt;
-            HEIGHTMAP_TYPES = heightmapTypes;
             MOTION_BLOCKING_NO_LEAVES = motionBlocking;
             OCEAN_FLOOR = oceanFloorType;
             HAS_PRIMED_HEIGHTMAP = hasPrimed;
@@ -415,10 +400,13 @@ public final class SurfaceHeights {
         private Nms() {
         }
 
-        /** The already-loaded server chunk, or null if unavailable. */
+        // The already-loaded server chunk, or null if unavailable.
         static Object chunkAt(World world, int chunkX, int chunkZ) {
             if (!AVAILABLE) {
                 return null;
+            }
+            if (NmsBlockReader.available()) {
+                return NmsBlockReader.chunkAt(world, chunkX, chunkZ);
             }
             try {
                 Method getHandle = GET_HANDLE.computeIfAbsent(world.getClass(), type -> {
@@ -442,7 +430,7 @@ public final class SurfaceHeights {
             }
         }
 
-        /** Whether the motion-blocking height map is primed, or null on failure. */
+        // Whether the motion-blocking height map is primed, or null on failure.
         static Boolean hasPrimedHeightmap(Object chunk) {
             return hasPrimedHeightmap(chunk, MOTION_BLOCKING_NO_LEAVES);
         }
@@ -458,20 +446,12 @@ public final class SurfaceHeights {
             }
         }
 
-        /** Height-map Y of one column, if the map is primed. */
-        static Integer heightAt(Object chunk, int x, int z) {
-            if (!Boolean.TRUE.equals(hasPrimedHeightmap(chunk))) {
-                return null;
-            }
-            return heightAtPrimed(chunk, x, z);
-        }
-
-        /** Motion-blocking height of one column. */
+        // Motion-blocking height of one column.
         static Integer heightAtPrimed(Object chunk, int x, int z) {
             return heightAtPrimed(chunk, x, z, MOTION_BLOCKING_NO_LEAVES);
         }
 
-        /** Height-map Y of one column; the caller must have checked priming first. */
+        // Height-map Y of one column; the caller must have checked priming first.
         private static Integer heightAtPrimed(Object chunk, int x, int z, Object type) {
             if (!AVAILABLE || type == null) {
                 return null;
@@ -483,7 +463,7 @@ public final class SurfaceHeights {
             }
         }
 
-        /** Primed {@code OCEAN_FLOOR} height of one column, or null if unavailable. */
+        // Primed {@code OCEAN_FLOOR} height of one column, or null if unavailable.
         private static Integer oceanFloorAt(Object chunk, int x, int z) {
             if (OCEAN_FLOOR == null || !Boolean.TRUE.equals(hasPrimedHeightmap(chunk, OCEAN_FLOOR))) {
                 return null;
@@ -491,11 +471,9 @@ public final class SurfaceHeights {
             return heightAtPrimed(chunk, x, z, OCEAN_FLOOR);
         }
 
-        /**
-         * Real terrain surface of one column: the primed height map, otherwise a direct block scan.
-         * Both paths start from {@code MOTION_BLOCKING_NO_LEAVES}, which counts fluids, so fluid
-         * columns are resolved to {@code OCEAN_FLOOR}.
-         */
+        // Real terrain surface of one column: the primed height map, otherwise a direct block scan.
+        // Both paths start from {@code MOTION_BLOCKING_NO_LEAVES}, which counts fluids, so fluid
+        // columns are resolved to {@code OCEAN_FLOOR}.
         static Integer surfaceY(Object chunk, World world, int x, int z) {
             if (!AVAILABLE) {
                 return null;
@@ -525,19 +503,15 @@ public final class SurfaceHeights {
             }
         }
 
-        /**
-         * Resolves a height-map surface to real terrain: through vegetation first, then through
-         * fluid or an ice cap to the floor. The order matters for trees standing in shallow water.
-         */
+        // Resolves a height-map surface to real terrain: through vegetation first, then through
+        // fluid or an ice cap to the floor. The order matters for trees standing in shallow water.
         static Integer adjustSurface(Object chunk, World world, int x, int z, int surfaceY) {
             return adjustForFluids(chunk, world, x, z,
                     adjustForVegetation(chunk, world, x, z, surfaceY));
         }
 
-        /**
-         * Replaces a wood or foliage surface with the ground underneath, so a tree trunk does not
-         * become the masking ceiling and leave a fake-stone pillar below it.
-         */
+        // Replaces a wood or foliage surface with the ground underneath, so a tree trunk does not
+        // become the masking ceiling and leave a fake-stone pillar below it.
         private static int adjustForVegetation(Object chunk, World world, int x, int z, int surfaceY) {
             if (chunk == null) {
                 return surfaceY;
@@ -571,10 +545,8 @@ public final class SurfaceHeights {
             return isWoody(material) || (material != null && material.name().endsWith("_LEAVES"));
         }
 
-        /**
-         * Turns a fluid or ice-capped surface into the seabed below it, scanning with the
-         * {@code OCEAN_FLOOR} predicate, which ignores fluids.
-         */
+        // Turns a fluid or ice-capped surface into the seabed below it, scanning with the
+        // {@code OCEAN_FLOOR} predicate, which ignores fluids.
         static Integer adjustForFluids(Object chunk, World world, int x, int z, int surfaceY) {
             if (chunk == null || surfaceY < world.getMinHeight()) {
                 return surfaceY;
@@ -666,10 +638,8 @@ public final class SurfaceHeights {
             return material == Material.WATER || material == Material.LAVA || material == Material.BUBBLE_COLUMN;
         }
 
-        /**
-         * Whether the surface is soil, checking the top block and a few blocks below it through air.
-         * Unknown states count as soil, which is safe.
-         */
+        // Whether the surface is soil, checking the top block and a few blocks below it through air.
+        // Unknown states count as soil, which is safe.
         static boolean isSoftSurface(Object chunk, int x, int z, int surfaceY, int minY) {
             // The top block is what a fluid-adjusted seabed reports, so a sand floor stays real.
             if (surfaceY >= minY) {
@@ -698,6 +668,9 @@ public final class SurfaceHeights {
         }
 
         private static Object stateAt(Object chunk, int x, int y, int z) {
+            if (NmsBlockReader.available()) {
+                return NmsBlockReader.stateAt(chunk, x, y, z);
+            }
             try {
                 return GET_BLOCK_STATE.invoke(chunk, x, y, z);
             } catch (Throwable throwable) {
@@ -710,6 +683,11 @@ public final class SurfaceHeights {
             if (state == null || GET_BUKKIT_MATERIAL == null) {
                 return null;
             }
+            // Cached per block state; the reflective call below is only the first-time path.
+            Material known = NmsBlockReader.materialOf(state);
+            if (known != null) {
+                return known;
+            }
             try {
                 Object material = GET_BUKKIT_MATERIAL.invoke(state);
                 return material instanceof Material ? (Material) material : null;
@@ -719,10 +697,8 @@ public final class SurfaceHeights {
         }
     }
 
-    /**
-     * The packet's own height map: the client's exact terrain snapshot, safe to read on the Netty
-     * thread. The column order is read once from {@code Heightmap.getIndex} rather than guessed.
-     */
+    // The packet's own height map: the client's exact terrain snapshot, safe to read on the Netty
+    // thread. The column order is read once from {@code Heightmap.getIndex} rather than guessed.
     private static final class PacketHeights {
 
         private static final Method GET_HEIGHTMAPS;
@@ -760,7 +736,7 @@ public final class SurfaceHeights {
         private PacketHeights() {
         }
 
-        /** The raw {@code MOTION_BLOCKING_NO_LEAVES} array, or null if the packet has none. */
+        // The raw {@code MOTION_BLOCKING_NO_LEAVES} array, or null if the packet has none.
         static long[] raw(Object chunkData) {
             if (chunkData == null || GET_HEIGHTMAPS == null || MOTION_BLOCKING_NO_LEAVES == null) {
                 return null;
@@ -777,7 +753,7 @@ public final class SurfaceHeights {
             }
         }
 
-        /** Whether the raw array is long enough for all 256 packed columns. */
+        // Whether the raw array is long enough for all 256 packed columns.
         static boolean fits(long[] raw, int bits) {
             if (raw == null || bits <= 0) {
                 return false;
@@ -790,7 +766,7 @@ public final class SurfaceHeights {
             return raw.length >= needed;
         }
 
-        /** The bits per packed height value, or -1 when this world height cannot be packed. */
+        // The bits per packed height value, or -1 when this world height cannot be packed.
         static int bits(int worldHeight) {
             if (worldHeight <= 0) {
                 return -1;
@@ -803,7 +779,7 @@ public final class SurfaceHeights {
             return bits >= 32 ? -1 : bits;
         }
 
-        /** Decodes one packed height; -1 if the array is too short for the layout. */
+        // Decodes one packed height; -1 if the array is too short for the layout.
         static int decode(long[] raw, int bits, int x, int z) {
             if (bits <= 0 || INDEX_MODE < 0) {
                 return -1;

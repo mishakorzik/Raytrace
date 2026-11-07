@@ -8,7 +8,6 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
-import org.bukkit.plugin.Plugin;
 
 import java.util.List;
 
@@ -16,16 +15,13 @@ public final class RaytraceCommand implements CommandExecutor, TabCompleter {
 
     private static final List<String> SUBCOMMANDS = List.of("reload");
 
-    private final Plugin plugin;
     private final RaytraceConfig config;
     private final RaytraceEngine engine;
 
-    public RaytraceCommand(Plugin plugin, RaytraceConfig config, RaytraceEngine engine) {
-        this.plugin = plugin;
+    public RaytraceCommand(RaytraceConfig config, RaytraceEngine engine) {
         this.config = config;
         this.engine = engine;
     }
-
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (!sender.hasPermission("raytrace.admin")) {
@@ -36,17 +32,18 @@ public final class RaytraceCommand implements CommandExecutor, TabCompleter {
             sendUsage(sender);
             return true;
         }
-        config.reload();
+        if (!config.reload()) {
+            sender.sendMessage(Component.text("Raytrace could not read config.yml; the previous settings stay active. See the console.", NamedTextColor.RED));
+            return true;
+        }
         engine.clearConfigCaches();
         engine.resetAllPlayers();
         sender.sendMessage(Component.text("Raytrace configuration reloaded.", NamedTextColor.GREEN));
         return true;
     }
-
     private void sendUsage(CommandSender sender) {
         sender.sendMessage(Component.text("/raytrace reload", NamedTextColor.GRAY));
     }
-
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (!sender.hasPermission("raytrace.admin")) {

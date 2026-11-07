@@ -5,23 +5,16 @@ import com.heonezen.raytrace.util.NmsBlockReader;
 import org.bukkit.Chunk;
 import org.bukkit.World;
 
-import java.lang.reflect.Method;
 import java.util.Arrays;
 
-/**
- * Encodes a real chunk, masks it and decodes it with the server's own classes. Every block below
- * the ceiling must be fake, and every block above must be unchanged.
- */
+// Encodes a real chunk, masks it and decodes it with the server's own classes. Every block below
+// the ceiling must be fake, and every block above must be unchanged.
 public final class ChunkMaskSelfTest {
 
-    private ChunkMaskSelfTest() {
-    }
-
-    /** The outcome of the check. */
-    public record Result(boolean passed, String detail) {
-    }
-
-    /** Runs the check in the given world; the caller must own its region. */
+    private ChunkMaskSelfTest() {}
+    // The outcome of the check.
+    public record Result(boolean passed, String detail) {}
+    // Runs the check in the given world; the caller must own its region.
     public static Result run(Object factory, World world) {
         if (NativeProtocol.chunkFormatProblem() != null) {
             return new Result(false, NativeProtocol.chunkFormatProblem());
@@ -57,7 +50,6 @@ public final class ChunkMaskSelfTest {
             if (NmsBlockReader.isSensitiveBlockState(blockState("DIRT"))) {
                 return new Result(false, "a real dirt block state was classified as sensitive");
             }
-
             // Everything below the middle of the world is masked, everything above stays real.
             int ceiling = minY + (sectionCount / 2) * 16;
             int[] ceilings = new int[256];
@@ -66,7 +58,6 @@ public final class ChunkMaskSelfTest {
             if (masked == null) {
                 return new Result(false, "the masking did not produce a chunk");
             }
-
             Object readerBefore = buffer(original);
             Object readerAfter = buffer(masked);
             int maskedBlocks = 0;
@@ -89,8 +80,7 @@ public final class ChunkMaskSelfTest {
                             if (baseY + y < ceiling) {
                                 maskedBlocks++;
                                 if (now != fake) {
-                                    return new Result(false, "a block below the ceiling is not the fake block (Y "
-                                            + (baseY + y) + ")");
+                                    return new Result(false, "a block below the ceiling is not the fake block (Y " + (baseY + y) + ")");
                                 }
                             } else {
                                 realAbove++;
@@ -106,10 +96,8 @@ public final class ChunkMaskSelfTest {
                 return new Result(false, "no block was masked at all");
             }
             if (changedAbove > 0) {
-                return new Result(false, changedAbove + " of " + realAbove
-                        + " blocks above the ceiling were changed");
+                return new Result(false, changedAbove + " of " + realAbove + " blocks above the ceiling were changed");
             }
-
             // The same snapshot, masked again with a region the viewer has already earned.
             // Those blocks must come back exactly as they were: this is what stops a chunk that
             // arrives after a reveal from re-faking the cells that reveal just opened.
@@ -119,10 +107,8 @@ public final class ChunkMaskSelfTest {
             int earnedMaxZ = 11;
             int earnedMinY = minY + 4;
             int earnedMaxY = Math.min(ceiling - 1, minY + 27);
-            NativeProtocol.BlockVisibility earned = (x, y, z) -> x >= earnedMinX && x <= earnedMaxX
-                    && z >= earnedMinZ && z <= earnedMaxZ && y >= earnedMinY && y <= earnedMaxY;
-            byte[] partiallyMasked = NativeProtocol.maskChunkBuffer(factory, original, sectionCount, minY, ceilings,
-                    y -> fake, 0, 0, earned);
+            NativeProtocol.BlockVisibility earned = (x, y, z) -> x >= earnedMinX && x <= earnedMaxX && z >= earnedMinZ && z <= earnedMaxZ && y >= earnedMinY && y <= earnedMaxY;
+            byte[] partiallyMasked = NativeProtocol.maskChunkBuffer(factory, original, sectionCount, minY, ceilings, y -> fake, 0, 0, earned);
             if (partiallyMasked == null) {
                 return new Result(false, "the earned-aware masking did not produce a chunk");
             }
@@ -154,25 +140,21 @@ public final class ChunkMaskSelfTest {
                                     earnedLost++;
                                 }
                             } else if (now != fake) {
-                                return new Result(false, "a hidden block below the ceiling was not masked (Y "
-                                        + worldY + ")");
+                                return new Result(false, "a hidden block below the ceiling was not masked (Y " + worldY + ")");
                             }
                         }
                     }
                 }
             }
             if (earnedKept == 0 || earnedLost > 0) {
-                return new Result(false, earnedLost + " of " + earnedKept
-                        + " blocks the viewer had already earned were re-faked by the chunk mask");
+                return new Result(false, earnedLost + " of " + earnedKept + " blocks the viewer had already earned were re-faked by the chunk mask");
             }
-
             // The soil-buffer path: blocks above the normal ceiling but below the hard cutoff
             // are left real unless the sensitive-state predicate says they are an ore/container.
             int hardCeiling = Math.min(world.getMaxHeight(), ceiling + 16);
             int[] oreCeilings = new int[256];
             Arrays.fill(oreCeilings, hardCeiling);
-            byte[] protectedMasked = NativeProtocol.maskChunkBuffer(factory, original, sectionCount, minY,
-                    ceilings, oreCeilings, y -> fake, 0, 0, null, state -> true);
+            byte[] protectedMasked = NativeProtocol.maskChunkBuffer(factory, original, sectionCount, minY, ceilings, oreCeilings, y -> fake, 0, 0, null, state -> true);
             if (protectedMasked == null) {
                 return new Result(false, "the soil-buffer masking did not produce a chunk");
             }
@@ -197,12 +179,10 @@ public final class ChunkMaskSelfTest {
                             if (worldY < hardCeiling) {
                                 protectedCount++;
                                 if (now != fake) {
-                                    return new Result(false,
-                                            "a sensitive block in the soil buffer was not masked (Y " + worldY + ")");
+                                    return new Result(false, "a sensitive block in the soil buffer was not masked (Y " + worldY + ")");
                                 }
                             } else if (now != was) {
-                                return new Result(false,
-                                        "a block above the hard cutoff was changed (Y " + worldY + ")");
+                                return new Result(false, "a block above the hard cutoff was changed (Y " + worldY + ")");
                             }
                         }
                     }
@@ -211,15 +191,12 @@ public final class ChunkMaskSelfTest {
             if (protectedCount == 0) {
                 return new Result(false, "the soil-buffer mask changed no blocks");
             }
-            return new Result(true, maskedBlocks + " blocks masked, " + realAbove + " blocks above the ceiling intact, "
-                    + earnedKept + " earned blocks preserved, " + protectedCount
-                    + " sensitive-buffer blocks masked");
+            return new Result(true, maskedBlocks + " blocks masked, " + realAbove + " blocks above the ceiling intact, " + earnedKept + " earned blocks preserved, " + protectedCount + " sensitive-buffer blocks masked");
         } catch (Throwable throwable) {
             return new Result(false, String.valueOf(throwable));
         }
     }
-
-    /** The server's own chunk object behind a Bukkit chunk. */
+    // The server's own chunk object behind a Bukkit chunk.
     private static Object nmsChunk(Chunk chunk) throws Exception {
         // CraftChunk keeps the server's level and the chunk coordinates, not the chunk itself,
         // so the chunk is asked for through the server's own accessor.
@@ -228,8 +205,7 @@ public final class ChunkMaskSelfTest {
         Object result = chunk.getClass().getMethod("getHandle", statusClass).invoke(chunk, full);
         return result;
     }
-
-    /** The chunk snapshot exactly as the server sends it to a client. */
+    // The chunk snapshot exactly as the server sends it to a client.
     private static byte[] chunkSnapshot(Object levelChunk) throws Exception {
         Class<?> dataClass = Class.forName("net.minecraft.network.protocol.game.ClientboundLevelChunkPacketData");
         Object data = dataClass.getConstructor(levelChunk.getClass()).newInstance(levelChunk);
@@ -239,27 +215,22 @@ public final class ChunkMaskSelfTest {
         readBuffer.getClass().getMethod("readBytes", byte[].class).invoke(readBuffer, bytes);
         return bytes;
     }
-
-    /** The server's own stone block state. */
+    // The server's own stone block state.
     private static Object stoneState() throws Exception {
         return blockState("STONE");
     }
-
-    /** The server's own block state for a {@code Blocks} field. */
+    // The server's own block state for a {@code Blocks} field.
     private static Object blockState(String field) throws Exception {
         Class<?> blocks = Class.forName("net.minecraft.world.level.block.Blocks");
         Object block = blocks.getField(field).get(null);
         return block.getClass().getMethod("defaultBlockState").invoke(block);
     }
-
-    /** A buffer over the given bytes, in the server's own format. */
+    // A buffer over the given bytes, in the server's own format.
     private static Object buffer(byte[] bytes) throws Exception {
         Class<?> bufferClass = Class.forName("net.minecraft.network.FriendlyByteBuf");
-        return bufferClass.getConstructor(io.netty.buffer.ByteBuf.class)
-                .newInstance(io.netty.buffer.Unpooled.wrappedBuffer(bytes));
+        return bufferClass.getConstructor(io.netty.buffer.ByteBuf.class).newInstance(io.netty.buffer.Unpooled.wrappedBuffer(bytes));
     }
-
-    /** Reads the next section of a chunk snapshot. */
+    // Reads the next section of a chunk snapshot.
     private static Object readSection(Object factory, Object reader) throws Exception {
         Object section = NativeProtocol.newSectionForRead(factory);
         if (section == null) {
@@ -270,11 +241,9 @@ public final class ChunkMaskSelfTest {
         sectionClass.getMethod("read", bufferClass).invoke(section, reader);
         return section;
     }
-
     private static Object invoke(Object target, String name) throws Exception {
         return target.getClass().getMethod(name).invoke(target);
     }
-
     private static Object blockState(Object states, int x, int y, int z) throws Exception {
         return states.getClass().getMethod("get", int.class, int.class, int.class).invoke(states, x, y, z);
     }

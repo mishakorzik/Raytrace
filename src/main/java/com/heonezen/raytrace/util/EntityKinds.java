@@ -1,10 +1,8 @@
 package com.heonezen.raytrace.util;
 
-/**
- * Classifies server entity classes. The classification walks the class hierarchy by simple
- * name, so it does not depend on the package layout, which moved between Minecraft versions
- * (for example the minecart classes). Results are cached per class.
- */
+// Classifies server entity classes. The classification walks the class hierarchy by simple
+// name, so it does not depend on the package layout, which moved between Minecraft versions
+// (for example the minecart classes). Results are cached per class.
 public final class EntityKinds {
 
     private static final Class<?> PLAYER = load("net.minecraft.world.entity.player.Player");
@@ -19,7 +17,7 @@ public final class EntityKinds {
 
     private EntityKinds() {
     }
-    /** The kind of a server entity class (an entity handle's class or a spawn packet's base class). */
+    // The kind of a server entity class (an entity handle's class or a spawn packet's base class).
     public static EntityKind of(Class<?> nmsClass) {
         return nmsClass == null ? EntityKind.OTHER : CACHE.get(nmsClass);
     }

@@ -23,11 +23,7 @@ public final class ConcurrentIntSet {
         return data.length == 0;
     }
 
-    public int size() {
-        return data.length;
-    }
-
-    /** @return true if the value was not present before */
+    // @return true if the value was not present before
     public synchronized boolean add(int value) {
         int[] current = data;
         int index = Arrays.binarySearch(current, value);
@@ -43,7 +39,7 @@ public final class ConcurrentIntSet {
         return true;
     }
 
-    /** @return true if the value was present */
+    // @return true if the value was present
     public synchronized boolean remove(int value) {
         int[] current = data;
         int index = Arrays.binarySearch(current, value);
@@ -63,10 +59,5 @@ public final class ConcurrentIntSet {
 
     public synchronized void clear() {
         data = EMPTY;
-    }
-
-    /** An immutable copy of the current contents. */
-    public int[] toArray() {
-        return data.clone();
     }
 }

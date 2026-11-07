@@ -18,31 +18,26 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * Per-player state. The Netty threads read only the concurrent members (earned cells, hidden
- * entity ids, the cached eye, world and bypass flag); everything marked "tick thread" is touched
- * only by the player's own region thread.
- */
+// Per-player state. The Netty threads read only the concurrent members (earned cells, hidden
+// entity ids, the cached eye, world and bypass flag); everything marked "tick thread" is touched
+// only by the player's own region thread.
 final class PlayerState {
 
-    /** An entity withheld from this client: it has no spawn on the client right now. */
+    // An entity withheld from this client: it has no spawn on the client right now.
     static final class HiddenEntity {
         final int id;
         final UUID uuid;
-        /** The spawn packet to replay if the tracker cannot re-introduce the entity. May be null. */
+        // The spawn packet to replay if the tracker cannot re-introduce the entity. May be null.
         final Object spawnPacket;
-        /** False until the periodic scan has confirmed what the spawn-time check decided. */
-        volatile boolean confirmed;
 
-        HiddenEntity(int id, UUID uuid, Object spawnPacket, boolean confirmed) {
+        HiddenEntity(int id, UUID uuid, Object spawnPacket) {
             this.id = id;
             this.uuid = uuid;
             this.spawnPacket = spawnPacket;
-            this.confirmed = confirmed;
         }
     }
 
-    /** The last visibility verdict for one entity, so an unchanged situation is not re-ray-traced. */
+    // The last visibility verdict for one entity, so an unchanged situation is not re-ray-traced.
     static final class EntityCheck {
         double eyeX;
         double eyeY;
@@ -54,26 +49,31 @@ final class PlayerState {
         long tick;
         int scanId;
         boolean hidden;
+        // Whether the last verdict hides the entity because it is inside hidden terrain
+        // (underground) rather than merely occluded by a wall. Hidden-terrain hides skip the
+        // grace delay: such an entity was never legitimately seen.
+        boolean hiddenTerrain;
+        // Tick of the first scan in which this (still visible) entity was found occluded, or -1
+        // when nothing is pending. The entity is hidden only after ENTITY_HIDE_DELAY_TICKS of
+        // continuous occlusion; becoming visible again in between cancels the pending hide.
+        long hiddenSinceTick = -1L;
     }
 
-    final UUID uuid;
-
     private final Set<CellPos> visibleCells = ConcurrentHashMap.newKeySet();
-    /** Earned cells grouped by the chunk column of their minimum corner. */
+    // Earned cells grouped by the chunk column of their minimum corner.
     private final ConcurrentHashMap<Long, Set<CellPos>> columns = new ConcurrentHashMap<>();
     private final AtomicInteger cellVersion = new AtomicInteger();
 
     private final ConcurrentHashMap<Integer, HiddenEntity> hiddenEntities = new ConcurrentHashMap<>();
     private final ConcurrentIntSet hiddenIds = new ConcurrentIntSet();
-    /** Spawn packets of entities the client currently knows and that could be hidden later. */
+    // Spawn packets of entities the client currently knows and that could be hidden later.
     private final ConcurrentHashMap<Integer, Object> knownSpawns = new ConcurrentHashMap<>();
-    /** Entities this plugin just introduced itself; their spawn must not be re-judged at once. */
+    // Entities this plugin just introduced itself; their spawn must not be re-judged at once.
     private final ConcurrentHashMap<Integer, Integer> revealedAt = new ConcurrentHashMap<>();
 
     private volatile Object connection;
     private volatile Channel channel;
     private volatile World world;
-    private volatile boolean online = true;
 
     private volatile boolean bypassed;
     private volatile boolean spectator;
@@ -117,10 +117,6 @@ final class PlayerState {
     final LongIntMap focusTouched = new LongIntMap(512);
     final LongIntMap scanTouched = new LongIntMap(2048);
 
-    PlayerState(UUID uuid) {
-        this.uuid = uuid;
-    }
-
     Object connection() {
         return connection;
     }
@@ -142,14 +138,6 @@ final class PlayerState {
         this.world = world;
     }
 
-    boolean online() {
-        return online;
-    }
-
-    void markOffline() {
-        online = false;
-    }
-
     boolean isCellVisible(CellPos cell) {
         return visibleCells.contains(cell);
     }
@@ -158,7 +146,7 @@ final class PlayerState {
         return !visibleCells.isEmpty();
     }
 
-    /** Bumped whenever the set of earned cells changes; entity verdicts depend on it. */
+    // Bumped whenever the set of earned cells changes; entity verdicts depend on it.
     int cellVersion() {
         return cellVersion.get();
     }
@@ -171,10 +159,8 @@ final class PlayerState {
         }
     }
 
-    /**
-     * Whether any earned cell can touch this chunk. A cell is at most 16 blocks wide, so it
-     * reaches into a chunk from the column of its minimum corner or the one before it.
-     */
+    // Whether any earned cell can touch this chunk. A cell is at most 16 blocks wide, so it
+    // reaches into a chunk from the column of its minimum corner or the one before it.
     boolean hasVisibleCellsInChunk(int chunkX, int chunkZ) {
         return columnHasCells(chunkX, chunkZ) || columnHasCells(chunkX - 1, chunkZ) || columnHasCells(chunkX, chunkZ - 1) || columnHasCells(chunkX - 1, chunkZ - 1);
     }
@@ -188,7 +174,7 @@ final class PlayerState {
         return ((long) chunkX << 32) ^ (chunkZ & 0xffffffffL);
     }
 
-    /** Forgets the cells whose minimum corner is in this chunk column. */
+    // Forgets the cells whose minimum corner is in this chunk column.
     void forgetColumn(int chunkX, int chunkZ) {
         Set<CellPos> removed = columns.remove(columnKey(chunkX, chunkZ));
         if (removed != null && !removed.isEmpty()) {
@@ -197,11 +183,9 @@ final class PlayerState {
         }
     }
 
-    /**
-     * Forgets cells outside the radius and returns only the first ring for re-masking; cells
-     * further out are already unloaded by the client. Works on whole columns, so the cost is the
-     * number of columns, not the number of earned cells.
-     */
+    // Forgets cells outside the radius and returns only the first ring for re-masking; cells
+    // further out are already unloaded by the client. Works on whole columns, so the cost is the
+    // number of columns, not the number of earned cells.
     Set<CellPos> forgetOutside(int centerChunkX, int centerChunkZ, int radiusChunks) {
         Set<CellPos> forgotten = null;
         boolean changed = false;
@@ -231,7 +215,39 @@ final class PlayerState {
         return forgotten == null ? Set.of() : forgotten;
     }
 
-    /** Forgets the terrain the viewer had earned, without touching the hidden entities. */
+    // Forgets every earned cell and returns them for re-masking (config reload).
+    Set<CellPos> forgetInside() {
+        Set<CellPos> forgotten = new HashSet<>();
+        boolean changed = false;
+        for (Map.Entry<Long, Set<CellPos>> entry : columns.entrySet()) {
+            long key = entry.getKey();
+            int columnX = (int) (key >> 32);
+            int columnZ = (int) key;
+            Set<CellPos> cells = entry.getValue();
+            if (cells == null || cells.isEmpty()) {
+                continue;
+            }
+            columns.remove(key, cells);
+            visibleCells.removeAll(cells);
+            forgotten.addAll(cells);
+            changed = true;
+        }
+        if (changed) {
+            cellVersion.incrementAndGet();
+        }
+        lastScanTick = Long.MIN_VALUE;
+        lastScanWorld = null;
+        pendingDeferredReveals = false;
+        deferredCells = new ArrayList<>();
+        return forgotten;
+    }
+
+    // Forces the next terrain scan to run immediately on the next tick, even standing still.
+    void invalidateScan() {
+        lastScanTick = Long.MIN_VALUE;
+    }
+
+    // Forgets the terrain the viewer had earned, without touching the hidden entities.
     void clearVisibleCells() {
         visibleCells.clear();
         columns.clear();
@@ -255,11 +271,9 @@ final class PlayerState {
         return tickCounter;
     }
 
-    /**
-     * Whether a terrain scan is due. A scan that ran out of budget keeps the next one coming
-     * even when the player stands still, otherwise cells deferred for lack of budget would wait
-     * for the player to move.
-     */
+    // Whether a terrain scan is due. A scan that ran out of budget keeps the next one coming
+    // even when the player stands still, otherwise cells deferred for lack of budget would wait
+    // for the player to move.
     boolean shouldRefreshScan(String worldName, double x, double y, double z, float yaw, float pitch,
                               GridSettings.BlockGrid settings) {
         long last = lastScanTick;
@@ -305,7 +319,7 @@ final class PlayerState {
         return rayProgress;
     }
 
-    /** Records how many rays this scan cast; the next scan continues after them. */
+    // Records how many rays this scan cast; the next scan continues after them.
     void advanceRays(int cast, int planSize) {
         if (planSize <= 0) {
             rayCursor = 0;
@@ -325,10 +339,8 @@ final class PlayerState {
         deferredCells = cells;
     }
 
-    /**
-     * Whether the cheap every-tick look-direction pass is worth running: it is skipped while the
-     * player neither moves nor turns.
-     */
+    // Whether the cheap every-tick look-direction pass is worth running: it is skipped while the
+    // player neither moves nor turns.
     boolean shouldRunFocus(double x, double y, double z, float yaw, float pitch) {
         if (focusValid) {
             double dx = x - focusX;
@@ -348,7 +360,7 @@ final class PlayerState {
         return true;
     }
 
-    /** Whether the player's body-sized safety bubble moved to another block. */
+    // Whether the player's body-sized safety bubble moved to another block.
     boolean bubbleMoved(int blockX, int blockY, int blockZ) {
         if (bubbleValid && bubbleX == blockX && bubbleY == blockY && bubbleZ == blockZ) {
             return false;
@@ -360,17 +372,15 @@ final class PlayerState {
         return true;
     }
 
-    /** Forces the next focus pass and bubble to run, e.g. after a teleport. */
+    // Forces the next focus pass and bubble to run, e.g. after a teleport.
     void invalidateFocus() {
         focusValid = false;
         bubbleValid = false;
         lastScanTick = Long.MIN_VALUE;
     }
 
-    /**
-     * Whether the hidden-entity scan is due. The {@code Long.MIN_VALUE} sentinel is checked
-     * explicitly because subtracting it would overflow.
-     */
+    // Whether the hidden-entity scan is due. The {@code Long.MIN_VALUE} sentinel is checked
+    // explicitly because subtracting it would overflow.
     boolean shouldRefreshEntityScan(long intervalTicks) {
         long last = lastEntityScanTick;
         if (last != Long.MIN_VALUE && tickCounter - last < intervalTicks) {
@@ -380,7 +390,7 @@ final class PlayerState {
         return true;
     }
 
-    /** Whether the permission lookup is due again (it is far more expensive than a game-mode read). */
+    // Whether the permission lookup is due again (it is far more expensive than a game-mode read).
     boolean shouldRefreshPermission(long intervalTicks) {
         long last = lastPermissionTick;
         if (last != Long.MIN_VALUE && tickCounter - last < intervalTicks) {
@@ -399,21 +409,9 @@ final class PlayerState {
         return bypassed;
     }
 
-    void setBypassed(boolean value) {
-        bypassed = value;
-    }
-
-    boolean spectator() {
-        return spectator;
-    }
-
     void setSpectator(boolean value) {
         spectator = value;
         bypassed = value || permissionBypass;
-    }
-
-    boolean permissionBypass() {
-        return permissionBypass;
     }
 
     void setPermissionBypass(boolean value) {
@@ -444,7 +442,7 @@ final class PlayerState {
         return eyeZ;
     }
 
-    /** Whether the client must not hear about this entity right now. Safe on any thread. */
+    // Whether the client must not hear about this entity right now. Safe on any thread.
     boolean isEntityHidden(int entityId) {
         return hiddenIds.contains(entityId);
     }
@@ -461,19 +459,23 @@ final class PlayerState {
         return hiddenEntities.values();
     }
 
-    /** Starts withholding an entity. */
-    HiddenEntity hideEntity(int entityId, UUID entityUuid, Object spawnPacket, boolean confirmed) {
-        HiddenEntity entry = new HiddenEntity(entityId, entityUuid, spawnPacket, confirmed);
+    // Starts withholding an entity.
+    HiddenEntity hideEntity(int entityId, UUID entityUuid, Object spawnPacket) {
+        HiddenEntity entry = new HiddenEntity(entityId, entityUuid, spawnPacket);
         hiddenEntities.put(entityId, entry);
         hiddenIds.add(entityId);
         return entry;
     }
 
-    /** Stops withholding an entity; the caller then has to re-introduce it to the client. */
+    // Stops withholding an entity; the caller then has to re-introduce it to the client.
     HiddenEntity unhideEntity(int entityId) {
         // The id leaves the fast set first, so packets queued after this point are not dropped.
         hiddenIds.remove(entityId);
         return hiddenEntities.remove(entityId);
+    }
+
+    boolean hasKnownSpawns() {
+        return !knownSpawns.isEmpty();
     }
 
     void rememberSpawn(int entityId, Object packet) {
@@ -488,7 +490,7 @@ final class PlayerState {
         knownSpawns.remove(entityId);
     }
 
-    /** Remembers that an entity was just introduced, so its fresh spawn passes unjudged. */
+    // Remembers that an entity was just introduced, so its fresh spawn passes unjudged.
     void markRevealed(int entityId) {
         revealedAt.put(entityId, entityScanId);
     }
@@ -504,8 +506,6 @@ final class PlayerState {
         knownSpawns.clear();
         entityChecks.clear();
     }
-
-    // ---- entity verdict cache (tick thread)
 
     int beginEntityScan() {
         int id = ++entityScanId;
@@ -524,12 +524,19 @@ final class PlayerState {
         return check;
     }
 
-    /** Drops verdicts of entities that were not part of the scan that just ended. */
+    // Drops verdicts of entities that were not part of the scan that just ended.
     void endEntityScan(int scanId) {
         entityChecks.values().removeIf(check -> check.scanId != scanId);
     }
 
-    /** Forgets everything: used when the player changes world. */
+    // Drops cached entity verdicts, so the next scan re-traces them. Called when the terrain
+    // changed (block broken/placed) while the player stands still: without it a fresh-looking
+    // verdict would be reused for up to 40 ticks even though a wall is gone.
+    void invalidateEntityChecks() {
+        entityChecks.clear();
+    }
+
+    // Forgets everything: used when the player changes world.
     void clear() {
         clearVisibleCells();
         clearEntities();
