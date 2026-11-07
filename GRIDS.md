@@ -1,5 +1,3 @@
-# HOW THE GRIDS WORK
-
 ## BLOCK GRID (grids.blocks)
 
 The world is split into cubes of "size" x "size" x "size" blocks, called cells.
