@@ -4,6 +4,9 @@ Raytrace is a self-contained packet-level anti-ESP and anti-freecam plugin for *
 and Canvas 1.21.4+ / 26.x**. It does not add blocks, commands for players, or dependencies; it
 rewrites the packets already sent to each client.
 
+> **New here?** Check out the [wiki](https://github.com/mishakorzik/Raytrace/wiki) -
+> how the grids work, configuration, tuning, and the API reference for other plugins.
+
 ## What it does
 
 - **Terrain masking.** Blocks below the real surface are replaced in chunk packets with
