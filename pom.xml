@@ -4,7 +4,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.heonezen</groupId>
     <artifactId>raytrace</artifactId>
-    <version>1.0.0a</version>
+    <version>1.0.1b</version>
     <packaging>jar</packaging>
     <name>Raytrace</name>
     <description>Packet-level anti-ESP / anti-freecam</description>
