@@ -41,6 +41,11 @@ public final class NmsBlockReader {
     private static final Method SHAPE_IS_FULL;
     private static final Constructor<?> BLOCK_POS_CTOR;
     private static final Constructor<?> VEC3_CTOR;
+    // VoxelShape#toAabbs and the AABB bounds: lets a partial shape be cached as plain numbers and
+    // tested with an allocation-free segment/box check instead of a reflective clip() that
+    // builds two Vec3, a BlockPos and a box list for every voxel a ray crosses.
+    private static final Method SHAPE_TO_AABBS;
+    private static final java.lang.reflect.Field[] AABB_BOUNDS;
     private static final boolean SHAPES_AVAILABLE;
     private static final String SHAPE_FAILURE;
 
@@ -148,6 +153,27 @@ public final class NmsBlockReader {
                 shapeFailure = "shape lookup " + ignored;
             }
         }
+        Method toAabbs = null;
+        java.lang.reflect.Field[] bounds = null;
+        try {
+            Class<?> shapeClass = Class.forName("net.minecraft.world.phys.shapes.VoxelShape");
+            Class<?> aabb = Class.forName("net.minecraft.world.phys.AABB");
+            Method candidate = shapeClass.getMethod("toAabbs");
+            java.lang.reflect.Field[] fields = new java.lang.reflect.Field[6];
+            String[] names = {"minX", "minY", "minZ", "maxX", "maxY", "maxZ"};
+            for (int i = 0; i < names.length; i++) {
+                fields[i] = aabb.getField(names[i]);
+                if (fields[i].getType() != double.class) {
+                    throw new NoSuchFieldException(names[i] + " is not a double");
+                }
+            }
+            toAabbs = candidate;
+            bounds = fields;
+        } catch (Throwable ignored) {
+            // The reflective clip() below stays in use.
+        }
+        SHAPE_TO_AABBS = toAabbs;
+        AABB_BOUNDS = bounds;
         GET_SHAPE = shapeMethod;
         SHAPE_CLIP = clipMethod;
         SHAPE_IS_EMPTY = emptyMethod;
@@ -159,8 +185,7 @@ public final class NmsBlockReader {
         SHAPE_FAILURE = SHAPES_AVAILABLE ? null : shapeFailure;
     }
 
-    private NmsBlockReader() {
-    }
+    private NmsBlockReader() {}
 
     // Whether direct server block reads work on this server.
     public static boolean available() {
@@ -329,6 +354,9 @@ public final class NmsBlockReader {
             // lookup failed: keep the coarse verdict.
             return base;
         }
+        if (shape instanceof double[] boxes) {
+            return segmentHitsBoxes(boxes, worldX, worldY, worldZ, ex, ey, ez, tx, ty, tz);
+        }
         try {
             Object start = VEC3_CTOR.newInstance(ex, ey, ez);
             Object end = VEC3_CTOR.newInstance(tx, ty, tz);
@@ -360,9 +388,77 @@ public final class NmsBlockReader {
             // and similar pass rays only through their actually solid boxes. (Fences e.g. return
             // false from useShapeForLightOcclusion(), which is the light-engine flag, not the
             // sight shape - applying it would keep them solid.)
-            return shape;
+            double[] boxes = boxesOf(shape);
+            return boxes != null ? boxes : shape;
         } catch (Throwable throwable) {
             return Boolean.FALSE;
         }
+    }
+
+    // The shape's boxes as {minX, minY, minZ, maxX, maxY, maxZ} groups relative to the block,
+    // or null when they cannot be read (the reflective clip is used then).
+    private static double[] boxesOf(Object shape) {
+        if (SHAPE_TO_AABBS == null || AABB_BOUNDS == null) {
+            return null;
+        }
+        try {
+            Object value = SHAPE_TO_AABBS.invoke(shape);
+            if (!(value instanceof java.util.List<?> list) || list.isEmpty()) {
+                return null;
+            }
+            double[] boxes = new double[list.size() * 6];
+            int index = 0;
+            for (Object box : list) {
+                for (java.lang.reflect.Field bound : AABB_BOUNDS) {
+                    boxes[index++] = bound.getDouble(box);
+                }
+            }
+            return boxes;
+        } catch (Throwable throwable) {
+            return null;
+        }
+    }
+
+    // Whether the segment from (sx, sy, sz) to (tx, ty, tz) touches any of the boxes placed at
+    // this block. Slab test, no allocation; a segment starting or ending inside a box counts.
+    public static boolean segmentHitsBoxes(double[] boxes, int blockX, int blockY, int blockZ,
+                                    double sx, double sy, double sz, double tx, double ty, double tz) {
+        double dx = tx - sx;
+        double dy = ty - sy;
+        double dz = tz - sz;
+        for (int i = 0; i + 5 < boxes.length; i += 6) {
+            double enter = 0.0;
+            double exit = 1.0;
+            for (int axis = 0; axis < 3; axis++) {
+                double start = axis == 0 ? sx : (axis == 1 ? sy : sz);
+                double delta = axis == 0 ? dx : (axis == 1 ? dy : dz);
+                int offset = axis == 0 ? blockX : (axis == 1 ? blockY : blockZ);
+                double min = offset + boxes[i + axis];
+                double max = offset + boxes[i + 3 + axis];
+                if (Math.abs(delta) < 1.0e-12) {
+                    if (start < min || start > max) {
+                        exit = -1.0;
+                        break;
+                    }
+                    continue;
+                }
+                double near = (min - start) / delta;
+                double far = (max - start) / delta;
+                if (near > far) {
+                    double swap = near;
+                    near = far;
+                    far = swap;
+                }
+                enter = Math.max(enter, near);
+                exit = Math.min(exit, far);
+                if (enter > exit) {
+                    break;
+                }
+            }
+            if (enter <= exit) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -99,11 +99,6 @@ Performance:
 - Unchanged chunk sections are copied byte for byte instead of re-encoded.
 - The permission lookup runs every 2 seconds instead of every tick.
 
-If your server already has a `config.yml`, the new defaults are **not** applied to it: set
-`scan-ticks: 2`, `target-total-rays: 1600`, `max-steps-per-scan: 80000` and add
-`max-scan-micros: 1000` (or delete the file and let it regenerate). The new `hide-*` keys default
-to `true` when missing.
-
 ## Performance and bandwidth
 
 - **Bandwidth:** masks are single-value palettes, so fully masked chunk sections usually encode

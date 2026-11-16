@@ -79,6 +79,8 @@ final class PlayerState {
     private volatile boolean spectator;
     private volatile boolean permissionBypass;
     private volatile boolean eyeCached;
+    // Entity id of what the player is riding, or -1. Read by the spawn check on Netty threads.
+    private volatile int vehicleId = -1;
     private volatile double eyeX;
     private volatile double eyeY;
     private volatile double eyeZ;
@@ -428,6 +430,14 @@ final class PlayerState {
 
     boolean hasEye() {
         return eyeCached;
+    }
+
+    int vehicleId() {
+        return vehicleId;
+    }
+
+    void setVehicleId(int entityId) {
+        vehicleId = entityId;
     }
 
     double eyeX() {

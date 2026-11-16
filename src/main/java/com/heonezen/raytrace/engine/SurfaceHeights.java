@@ -710,8 +710,7 @@ public final class SurfaceHeights {
             Object motionBlocking = null;
             int indexMode = -1;
             try {
-                Class<?> dataClass = Class.forName(
-                        "net.minecraft.network.protocol.game.ClientboundLevelChunkPacketData");
+                Class<?> dataClass = Class.forName("net.minecraft.network.protocol.game.ClientboundLevelChunkPacketData");
                 getHeightmaps = dataClass.getMethod("getHeightmaps");
                 Class<?> types = Class.forName("net.minecraft.world.level.levelgen.Heightmap$Types");
                 motionBlocking = types.getField("MOTION_BLOCKING_NO_LEAVES").get(null);

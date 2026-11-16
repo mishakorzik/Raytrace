@@ -308,8 +308,7 @@ public final class NativeProtocol {
         }
     }
 
-    private record SendBinding(Class<?> type, MethodHandle handle) {
-    }
+    private record SendBinding(Class<?> type, MethodHandle handle) {}
 
     private static volatile SendBinding sendBinding;
 
@@ -622,10 +621,8 @@ public final class NativeProtocol {
             MethodHandle directGet = null;
             MethodHandle directGetAndSet = null;
             try {
-                directGet = MethodHandles.publicLookup().unreflect(get).asType(MethodType.methodType(
-                        Object.class, Object.class, int.class, int.class, int.class));
-                directGetAndSet = MethodHandles.publicLookup().unreflect(getAndSet).asType(MethodType.methodType(
-                        Object.class, Object.class, int.class, int.class, int.class, Object.class));
+                directGet = MethodHandles.publicLookup().unreflect(get).asType(MethodType.methodType(Object.class, Object.class, int.class, int.class, int.class));
+                directGetAndSet = MethodHandles.publicLookup().unreflect(getAndSet).asType(MethodType.methodType(Object.class, Object.class, int.class, int.class, int.class, Object.class));
             } catch (IllegalAccessException | RuntimeException ignored) {
                 // The reflective Method is used instead.
             }
@@ -644,8 +641,7 @@ public final class NativeProtocol {
             Object blockRegistry = null;
             Object biomeRegistry = null;
             try {
-                Class<?> factoryClass = Class.forName(
-                        "net.minecraft.world.level.chunk.PalettedContainerFactory");
+                Class<?> factoryClass = Class.forName("net.minecraft.world.level.chunk.PalettedContainerFactory");
                 modernSection = sectionClass.getConstructor(factoryClass);
                 modernSingle = containerClass.getConstructor(Object.class, strategyClass);
             } catch (Throwable modernFailure) {
@@ -812,13 +808,11 @@ public final class NativeProtocol {
 
             Class<?> blockUpdate = Class.forName("net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket");
             blockUpdate.getDeclaredField("pos");
-            blockUpdate.getConstructor(Class.forName("net.minecraft.core.BlockPos"),
-                    Class.forName("net.minecraft.world.level.block.state.BlockState"));
+            blockUpdate.getConstructor(Class.forName("net.minecraft.core.BlockPos"), Class.forName("net.minecraft.world.level.block.state.BlockState"));
             try {
                 Class<?> transientBlock = Class.forName("net.minecraft.network.protocol.game.ClientboundAddTransientBlockPacket");
                 transientBlock.getDeclaredField("pos");
-                transientBlock.getConstructor(Class.forName("net.minecraft.core.BlockPos"),
-                        Class.forName("net.minecraft.world.level.block.state.BlockState"));
+                transientBlock.getConstructor(Class.forName("net.minecraft.core.BlockPos"), Class.forName("net.minecraft.world.level.block.state.BlockState"));
             } catch (ClassNotFoundException ignored) {
                 // Older versions do not have this packet.
             }
@@ -973,51 +967,152 @@ public final class NativeProtocol {
     /**
      * Rewrites the encoded chunk snapshot: masked blocks become fake, earned blocks stay real.
      *
-     * @return true if the packet was changed
+     * <p>The original packet is never modified. A chunk packet can be one object shared by
+     * several players (a chunk refresh sends the same instance to everyone in range), and
+     * masking it in place let one player's mask - or worse, another player's earned blocks -
+     * reach a different client, with two Netty threads racing on the same fields. The masked
+     * data goes into a private shallow copy instead; only if this server cannot copy the packet
+     * is the old in-place rewrite used.
+     *
+     * @return the packet to send (normally a private copy), or null if it could not be masked
      */
-    public static boolean maskChunkData(Object packet, Object factory, int sectionCount, int minY, int[] ceilings, int[] oreCeilings, java.util.function.IntFunction<Object> fakeStateFor, int chunkX, int chunkZ, BlockVisibility visible, java.util.function.Predicate<Object> sensitiveState) {
+    public static Object maskChunkData(Object packet, Object factory, int sectionCount, int minY, int[] ceilings, int[] oreCeilings, java.util.function.IntFunction<Object> fakeStateFor, int chunkX, int chunkZ, BlockVisibility visible, java.util.function.Predicate<Object> sensitiveState) {
         try {
             ChunkFormat format = ChunkFormat.get();
             if (format == null || (format.requiresFactory && factory == null)) {
-                return false;
+                return null;
             }
             Object chunkData = get(packet, "chunkData");
             byte[] buffer = (byte[]) get(chunkData, "buffer");
             byte[] masked = maskChunkBuffer(format, buffer, factory, sectionCount, minY, ceilings, oreCeilings, fakeStateFor, chunkX, chunkZ, visible, sensitiveState);
             if (masked == null) {
-                return false;
+                return null;
+            }
+            List<Object> blockEntities = filteredBlockEntities(chunkData, oreCeilings != null ? oreCeilings : ceilings, chunkX, chunkZ, visible);
+            Object copy = copyChunkPacket(packet, chunkData, masked, blockEntities);
+            if (copy != null) {
+                return copy;
             }
             set(chunkData, "buffer", masked);
-            filterBlockEntities(chunkData, oreCeilings != null ? oreCeilings : ceilings, chunkX, chunkZ, visible);
-            return true;
+            if (blockEntities != null) {
+                set(chunkData, "blockEntitiesData", blockEntities);
+            }
+            return packet;
         } catch (Throwable throwable) {
-            return false;
+            return null;
         }
     }
 
-    // Drops unearned block entities below the ceiling; the client would still draw them.
-    private static void filterBlockEntities(Object chunkData, int[] ceilings, int chunkX, int chunkZ, BlockVisibility visible) {
+    // A private copy of the chunk packet carrying the masked data, or null if it cannot be built.
+    private static Object copyChunkPacket(Object packet, Object chunkData, byte[] masked, List<Object> blockEntities) {
+        try {
+            Object dataCopy = shallowCopy(chunkData);
+            if (dataCopy == null) {
+                return null;
+            }
+            Object packetCopy = shallowCopy(packet);
+            if (packetCopy == null) {
+                return null;
+            }
+            set(dataCopy, "buffer", masked);
+            if (blockEntities != null) {
+                set(dataCopy, "blockEntitiesData", blockEntities);
+            }
+            set(packetCopy, "chunkData", dataCopy);
+            return packetCopy;
+        } catch (Throwable throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * The block entities the viewer may receive, as a new list, or null when every entry is kept
+     * (or the list cannot be read). Unearned block entities below the ceiling are dropped: the
+     * client would still draw them. A new list is built rather than removing from the packet's
+     * own one, which may be shared or immutable.
+     */
+    private static List<Object> filteredBlockEntities(Object chunkData, int[] ceilings, int chunkX, int chunkZ, BlockVisibility visible) {
         try {
             Object value = get(chunkData, "blockEntitiesData");
-            if (!(value instanceof java.util.List<?> entities)) {
-                return;
+            if (!(value instanceof List<?> entities) || entities.isEmpty()) {
+                return null;
             }
             int baseX = chunkX << 4;
             int baseZ = chunkZ << 4;
-            java.util.Iterator<?> iterator = entities.iterator();
-            while (iterator.hasNext()) {
-                Object info = iterator.next();
+            List<Object> kept = null;
+            int size = entities.size();
+            for (int i = 0; i < size; i++) {
+                Object info = entities.get(i);
                 // Position is packed as section-relative X/Z plus absolute Y.
                 int packed = (int) get(info, "packedXZ");
                 int y = (int) get(info, "y");
                 int x = (packed >> 4) & 15;
                 int z = packed & 15;
-                if (y < ceilings[x * 16 + z] && (visible == null || !visible.isVisible(baseX + x, y, baseZ + z))) {
-                    iterator.remove();
+                boolean hide = y < ceilings[x * 16 + z] && (visible == null || !visible.isVisible(baseX + x, y, baseZ + z));
+                if (hide) {
+                    if (kept == null) {
+                        kept = new ArrayList<>(entities.subList(0, i));
+                    }
+                } else if (kept != null) {
+                    kept.add(info);
                 }
             }
+            return kept;
         } catch (Throwable throwable) {
             // Leave the block entities alone; a leftover one is better than a broken packet.
+            return null;
+        }
+    }
+
+    // Builds an object of a class without running its constructor, then copies every instance
+    // field: a shallow clone for packet classes that have no copy constructor.
+    private record ShallowCopier(Constructor<?> constructor, Field[] fields) {}
+
+    private static final ShallowCopier NO_COPIER = new ShallowCopier(null, new Field[0]);
+
+    private static final ClassValue<ShallowCopier> COPIERS = new ClassValue<>() {
+        @Override
+        protected ShallowCopier computeValue(Class<?> type) {
+            if (type.isRecord() || type.isHidden() || type.isArray() || type.isInterface()) {
+                return NO_COPIER;
+            }
+            try {
+                Class<?> factoryClass = Class.forName("sun.reflect.ReflectionFactory");
+                Object factory = factoryClass.getMethod("getReflectionFactory").invoke(null);
+                Constructor<?> constructor = (Constructor<?>) factoryClass
+                        .getMethod("newConstructorForSerialization", Class.class, Constructor.class)
+                        .invoke(factory, type, Object.class.getDeclaredConstructor());
+                constructor.setAccessible(true);
+                List<Field> fields = new ArrayList<>();
+                for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
+                    for (Field field : current.getDeclaredFields()) {
+                        if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                            continue;
+                        }
+                        field.setAccessible(true);
+                        fields.add(field);
+                    }
+                }
+                return new ShallowCopier(constructor, fields.toArray(new Field[0]));
+            } catch (Throwable throwable) {
+                return NO_COPIER;
+            }
+        }
+    };
+
+    private static Object shallowCopy(Object original) {
+        ShallowCopier copier = COPIERS.get(original.getClass());
+        if (copier == NO_COPIER) {
+            return null;
+        }
+        try {
+            Object copy = copier.constructor().newInstance();
+            for (Field field : copier.fields()) {
+                field.set(copy, field.get(original));
+            }
+            return copy;
+        } catch (Throwable throwable) {
+            return null;
         }
     }
 
@@ -1123,6 +1218,12 @@ public final class NativeProtocol {
                     // of re-encoding the same data.
                     target.writeBytes(source, sectionStart, sectionEnd - sectionStart);
                 }
+            }
+            if (source.isReadable()) {
+                // Never cut a chunk short: if the buffer holds more than the expected sections
+                // (e.g. a world-height mismatch during a dimension change), pass the rest on
+                // unchanged instead of sending the client a truncated, undecodable chunk.
+                target.writeBytes(source);
             }
         } catch (Throwable throwable) {
             target.release();

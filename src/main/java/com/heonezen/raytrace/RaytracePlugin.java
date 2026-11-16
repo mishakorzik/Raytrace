@@ -107,8 +107,7 @@ public final class RaytracePlugin extends JavaPlugin {
                 List<NativePacketSelfTest.Result> results = NativePacketSelfTest.run();
                 long failed = results.stream().filter(result -> !result.passed()).count();
                 if (failed == 0) {
-                    getLogger().info("Raytrace block-update copy self-check passed ("
-                            + results.size() + " checks).");
+                    getLogger().info("Raytrace block-update copy self-check passed (" + results.size() + " checks).");
                 } else {
                     getLogger().warning("Raytrace block-update copy self-check: " + failed + " of " + results.size() + " checks FAILED - hidden block changes could be exposed or visible changes could be dropped:");
                     for (NativePacketSelfTest.Result result : results) {
@@ -118,8 +117,7 @@ public final class RaytracePlugin extends JavaPlugin {
                     }
                 }
             } catch (Throwable throwable) {
-                getLogger().log(java.util.logging.Level.WARNING,
-                        "Raytrace block-update copy self-check could not be run", throwable);
+                getLogger().log(java.util.logging.Level.WARNING, "Raytrace block-update copy self-check could not be run", throwable);
             }
             runChunkMaskSelfTest();
         }, 100L);

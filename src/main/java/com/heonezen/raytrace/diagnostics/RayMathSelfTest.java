@@ -42,8 +42,29 @@ public final class RayMathSelfTest {
         test.testRayPattern();
         test.testSurfaceCeiling();
         test.testSensitiveBlocks();
+        test.testShapeBoxes();
         test.testMasking();
         return List.copyOf(test.results);
+    }
+
+    // The segment/box test that decides sight through stairs, slabs and fences.
+    private void testShapeBoxes() {
+        section("partial block shapes");
+        double[] bottomSlab = {0.0, 0.0, 0.0, 1.0, 0.5, 1.0};
+        check("a line over a bottom slab passes", hits(bottomSlab, 5.0, 64.75, 10.5, 15.0, 64.75, 10.5), 0);
+        check("a line through a bottom slab is blocked", hits(bottomSlab, 5.0, 64.25, 10.5, 15.0, 64.25, 10.5), 1);
+        check("a line straight down onto a bottom slab is blocked", hits(bottomSlab, 10.5, 70.0, 10.5, 10.5, 60.0, 10.5), 1);
+        check("a line ending before the slab passes", hits(bottomSlab, 5.0, 64.25, 10.5, 9.5, 64.25, 10.5), 0);
+        check("a line starting inside the slab is blocked", hits(bottomSlab, 10.5, 64.25, 10.5, 20.0, 64.25, 10.5), 1);
+        check("a diagonal line above the slab passes", hits(bottomSlab, 5.0, 66.0, 5.0, 15.0, 65.0, 15.0), 0);
+        // A stair: bottom half plus the back quarter on top.
+        double[] stair = {0.0, 0.0, 0.0, 1.0, 0.5, 1.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0};
+        check("a line through the stair notch passes", hits(stair, 5.0, 64.75, 10.25, 15.0, 64.75, 10.25), 0);
+        check("a line through the stair step is blocked", hits(stair, 5.0, 64.75, 10.75, 15.0, 64.75, 10.75), 1);
+    }
+
+    private static int hits(double[] boxes, double sx, double sy, double sz, double tx, double ty, double tz) {
+        return NmsBlockReader.segmentHitsBoxes(boxes, 10, 64, 10, sx, sy, sz, tx, ty, tz) ? 1 : 0;
     }
 
     // Verifies that the configured fake blocks resolve through the server's own registry.
@@ -375,8 +396,7 @@ public final class RayMathSelfTest {
                 double delta = Math.abs(((after - before - playerYaw) % 360.0 + 540.0) % 360.0 - 180.0);
                 worst = Math.max(worst, delta);
             }
-            check("rotating by " + playerYaw + " degrees shifts every ray by the same yaw",
-                    worst < 1.0e-3 ? 1 : 0, 1);
+            check("rotating by " + playerYaw + " degrees shifts every ray by the same yaw", worst < 1.0e-3 ? 1 : 0, 1);
         }
 
         // rotating onto a pitch must shift every ray by exactly that pitch

@@ -45,10 +45,7 @@ public final class NativePacketSelfTest {
         Object original = packetClass.getConstructor(blockPosClass, Class.forName("net.minecraft.world.level.block.state.BlockState")).newInstance(position, stone);
 
         Object copy = NativeProtocol.copyBlockUpdate(original, deepslate);
-        boolean passed = copy != null && copy != original
-                && NativeProtocol.get(original, "blockState") == stone
-                && NativeProtocol.get(copy, "blockState") == deepslate
-                && NativeProtocol.get(copy, "pos") == position;
+        boolean passed = copy != null && copy != original && NativeProtocol.get(original, "blockState") == stone && NativeProtocol.get(copy, "blockState") == deepslate && NativeProtocol.get(copy, "pos") == position;
         results.add(new Result("single block update is copied per player and the original is untouched", passed, passed ? "" : "original=" + NativeProtocol.get(original, "blockState") + ", copy=" + (copy == null ? "null" : NativeProtocol.get(copy, "blockState"))));
     }
     private void testSectionUpdateCopy() throws ReflectiveOperationException {

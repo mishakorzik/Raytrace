@@ -192,10 +192,14 @@ public final class RaytraceEngine {
         state.setSpectator(player.getGameMode() == GameMode.SPECTATOR);
         state.setPermissionBypass(player.hasPermission("raytrace.bypass"));
         state.updateEye(eye.getX(), eye.getY(), eye.getZ());
-        installNativeHandler(player, state);
+        if (!installNativeHandler(player, state)) {
+            // Without the packet handler nothing is masked or withheld for this client, so the
+            // scans would only resend real blocks it already has. Do not run them at all.
+            states.remove(player.getUniqueId(), state);
+            return;
+        }
         if (eye.getWorld() != null) {
-            immediateBubbleReveal(player, state, config.worldSettings(eye.getWorld()), eye.getWorld(),
-                    eye.getX(), eye.getY(), eye.getZ());
+            immediateBubbleReveal(player, state, config.worldSettings(eye.getWorld()), eye.getWorld(), eye.getX(), eye.getY(), eye.getZ());
         }
         startTask(player, state);
     }
@@ -353,10 +357,23 @@ public final class RaytraceEngine {
         try {
             tickInternal(player, state);
         } catch (Throwable throwable) {
-            // Keep the task alive: one bad call must not end protection for this player.
-            plugin.getLogger().log(Level.WARNING, "Raytrace tick failed for " + player.getName(), throwable);
+            // Keep the task alive: one bad call must not end protection for this player. A
+            // failure that repeats every tick would otherwise write 20 stack traces per second
+            // per player, so the log is rate-limited.
+            long now = System.nanoTime();
+            long next = nextTickFailureLog.get();
+            if (now - next >= 0 && nextTickFailureLog.compareAndSet(next, now + TICK_FAILURE_LOG_INTERVAL_NANOS)) {
+                long suppressed = suppressedTickFailures.getAndSet(0);
+                plugin.getLogger().log(Level.WARNING, "Raytrace tick failed for " + player.getName() + (suppressed > 0 ? " (" + suppressed + " similar failures were not logged)" : ""), throwable);
+            } else {
+                suppressedTickFailures.incrementAndGet();
+            }
         }
     }
+
+    private static final long TICK_FAILURE_LOG_INTERVAL_NANOS = 30_000_000_000L;
+    private final java.util.concurrent.atomic.AtomicLong nextTickFailureLog = new java.util.concurrent.atomic.AtomicLong(System.nanoTime());
+    private final java.util.concurrent.atomic.AtomicLong suppressedTickFailures = new java.util.concurrent.atomic.AtomicLong();
 
     private void tickInternal(Player player, PlayerState state) {
         // One location read per tick; everything below works from it.
@@ -367,6 +384,8 @@ public final class RaytraceEngine {
         }
         state.setWorld(world);
         state.updateEye(eye.getX(), eye.getY(), eye.getZ());
+        Entity vehicle = player.getVehicle();
+        state.setVehicleId(vehicle == null ? -1 : vehicle.getEntityId());
         refreshBypass(player, state);
 
         WorldSettings worldSettings = config.worldSettings(world);
@@ -449,8 +468,7 @@ public final class RaytraceEngine {
 
     // Reveals the player's surroundings immediately, used on join, teleport and respawn before
     // the next scheduled scan.
-    private void immediateBubbleReveal(Player player, PlayerState state, WorldSettings worldSettings,
-                                       World world, double eyeX, double eyeY, double eyeZ) {
+    private void immediateBubbleReveal(Player player, PlayerState state, WorldSettings worldSettings, World world, double eyeX, double eyeY, double eyeZ) {
         if (!worldSettings.terrainMaskingEnabled() || state.bypassed()) {
             return;
         }
@@ -467,8 +485,7 @@ public final class RaytraceEngine {
 
     // Cheap pass along the view direction: five rays (crosshair plus four around it) that reveal
     // what the player is looking at immediately, without waiting for the full scan.
-    private void revealFocusCells(Player player, PlayerState state, WorldSettings worldSettings,
-                                  World world, Location eye) {
+    private void revealFocusCells(Player player, PlayerState state, WorldSettings worldSettings, World world, Location eye) {
         GridSettings.BlockGrid scanSettings = config.blockGrid();
         int depthLimit = config.entityGrid().occlusionBlocks();
         RayContext ctx = new RayContext(world, worldSettings, scanSettings, FOCUS_STEP_BUDGET, Long.MAX_VALUE);
@@ -500,8 +517,7 @@ public final class RaytraceEngine {
     }
 
     // Marks every unearned cell of the map within the depth limit as earned and sends it.
-    private void revealAll(Player player, PlayerState state, World world, WorldSettings worldSettings,
-                           LongIntMap touched, int depthLimit) {
+    private void revealAll(Player player, PlayerState state, World world, WorldSettings worldSettings, LongIntMap touched, int depthLimit) {
         if (touched.isEmpty()) {
             return;
         }
@@ -594,8 +610,7 @@ public final class RaytraceEngine {
      *
      * @return true if cells are still waiting for budget
      */
-    private boolean revealCells(Player player, PlayerState state, World world, WorldSettings worldSettings,
-                                Location eye, LongIntMap touched) {
+    private boolean revealCells(Player player, PlayerState state, World world, WorldSettings worldSettings, Location eye, LongIntMap touched) {
         GridSettings.BlockGrid scanSettings = config.blockGrid();
         int gridSize = scanSettings.size();
         int cellCost = gridSize * gridSize * gridSize;
@@ -762,8 +777,7 @@ public final class RaytraceEngine {
 
     // 3D DDA through cells below the flat mask ceiling. The block grace does not reset in air,
     // but open air alone never stops the ray.
-    private void traceRay(RayContext ctx, double ex, double ey, double ez, double dx, double dy, double dz,
-                          int maxDistanceBlocks, LongIntMap touched) {
+    private void traceRay(RayContext ctx, double ex, double ey, double ez, double dx, double dy, double dz, int maxDistanceBlocks, LongIntMap touched) {
         int minY = ctx.minY;
         int maxY = ctx.maxY;
         int maskCeilingY = ctx.maskCeilingY;
@@ -931,8 +945,7 @@ public final class RaytraceEngine {
 
     // Sends the real blocks of these cells (reveal) or their fake blocks (hide). The cells of a
     // reveal must already be marked as earned, so the packet is not masked again.
-    private void sendCellChanges(Player player, PlayerState state, World world, WorldSettings worldSettings,
-                                 List<CellPos> cells, boolean reveal) {
+    private void sendCellChanges(Player player, PlayerState state, World world, WorldSettings worldSettings, List<CellPos> cells, boolean reveal) {
         if (cells.isEmpty()) {
             return;
         }
@@ -944,8 +957,7 @@ public final class RaytraceEngine {
             } catch (Throwable throwable) {
                 directBlockChangesBroken = true;
                 if (loggedDirectBlockFailure.compareAndSet(false, true)) {
-                    plugin.getLogger().log(Level.WARNING, "Raytrace could not send terrain changes straight from "
-                            + "server block states; falling back to the slower Bukkit path.", throwable);
+                    plugin.getLogger().log(Level.WARNING, "Raytrace could not send terrain changes straight from server block states; falling back to the slower Bukkit path.", throwable);
                 }
             }
         }
@@ -958,8 +970,7 @@ public final class RaytraceEngine {
      *
      * @return false if this server cannot do it (the caller falls back)
      */
-    private boolean sendCellChangesDirect(PlayerState state, World world, WorldSettings worldSettings,
-                                          List<CellPos> cells, boolean reveal) {
+    private boolean sendCellChangesDirect(PlayerState state, World world, WorldSettings worldSettings, List<CellPos> cells, boolean reveal) {
         Object source = NmsBlockReader.chunkSource(world);
         if (source == null) {
             return false;
@@ -1169,8 +1180,7 @@ public final class RaytraceEngine {
         return new RayPlan(total, xs, ys, zs);
     }
 
-    private static int addDirections(float[] xs, float[] ys, float[] zs, int index, double minOffset, double maxOffset,
-                                     int horizontalRays, int verticalRays) {
+    private static int addDirections(float[] xs, float[] ys, float[] zs, int index, double minOffset, double maxOffset, int horizontalRays, int verticalRays) {
         if (horizontalRays <= 0 || verticalRays <= 0) {
             return index;
         }
@@ -1194,19 +1204,24 @@ public final class RaytraceEngine {
     }
 
     // Installs the native packet handler on this player's connection.
-    private void installNativeHandler(Player player, PlayerState state) {
+    // @return true if the handler is in place
+    private boolean installNativeHandler(Player player, PlayerState state) {
         try {
             Object handle = player.getClass().getMethod("getHandle").invoke(player);
             io.netty.channel.Channel channel = NativeProtocol.channelOf(handle);
+            if (channel == null) {
+                throw new IllegalStateException("the player has no network channel");
+            }
             Object connection = NativeProtocol.connectionOf(handle);
             state.setConnection(connection, channel);
             // The handler carries the player's state itself, so no lookup is needed per packet.
             NativeProtocol.install(channel, new NativeProtocol.OutboundHandler(this::intercept, state));
+            return true;
         } catch (Throwable throwable) {
             if (nativeUnavailableLogged.compareAndSet(false, true)) {
-                plugin.getLogger().log(Level.WARNING, "Raytrace could not install its native packet handler; "
-                        + "protection is inactive for this player. (" + throwable + ")");
+                plugin.getLogger().log(Level.WARNING, "Raytrace could not install its native packet handler; protection is inactive for this player. (" + throwable + ")");
             }
+            return false;
         }
     }
 
@@ -1348,13 +1363,16 @@ public final class RaytraceEngine {
         }
         switch (kind) {
             case CHUNK -> {
-                // Change the per-player chunk packet in place; never swallow it.
-                if (worldSettings.terrainMaskingEnabled()
-                        && !maskChunkDataPacket(state, world, worldSettings, packet)
-                        && loggedFirstChunkMaskFailure.compareAndSet(false, true)) {
-                    plugin.getLogger().warning("Raytrace could not mask a chunk packet; that chunk may show "
-                            + "its real blocks until it is resent. The protection keeps running for other "
-                            + "packets. (Further occurrences are not logged.)");
+                // Send this player a privately masked copy; never swallow the chunk.
+                if (!worldSettings.terrainMaskingEnabled()) {
+                    return packet;
+                }
+                Object masked = maskChunkDataPacket(state, world, worldSettings, packet);
+                if (masked != null) {
+                    return masked;
+                }
+                if (loggedFirstChunkMaskFailure.compareAndSet(false, true)) {
+                    plugin.getLogger().warning("Raytrace could not mask a chunk packet; that chunk may show its real blocks until it is resent. The protection keeps running for other packets. (Further occurrences are not logged.)");
                 }
                 return packet;
             }
@@ -1649,6 +1667,10 @@ public final class RaytraceEngine {
             // Introduced again while we are hiding it: keep it hidden.
             return true;
         }
+        if (entityId == state.vehicleId()) {
+            // Never withhold what the viewer is riding: the client would dismount and desync.
+            return false;
+        }
         SpawnType type = spawnTypeOf(packet);
         if (type == null || !worldSettings.hides(type.kind())) {
             return false;
@@ -1708,13 +1730,10 @@ public final class RaytraceEngine {
 
         boolean hidden;
         try {
-            hidden = isEntityOccluded(state, world, worldSettings, ex, ey, ez, x, y, z,
-                    type.width(), type.height(), config.entityGrid().occlusionBlocks(), true);
+            hidden = isEntityOccluded(state, world, worldSettings, ex, ey, ez, x, y, z, type.width(), type.height(), config.entityGrid().occlusionBlocks(), true);
         } catch (RuntimeException exception) {
             if (loggedFirstOcclusionFailure.compareAndSet(false, true)) {
-                plugin.getLogger().log(Level.WARNING, "Entity occlusion check failed at least once (further "
-                        + "occurrences are not logged) - the affected spawn is left "
-                        + "visible for now", exception);
+                plugin.getLogger().log(Level.WARNING, "Entity occlusion check failed at least once (further occurrences are not logged) - the affected spawn is left visible for now", exception);
             }
             return false;
         }
@@ -1732,8 +1751,7 @@ public final class RaytraceEngine {
             return false;
         }
         double[] origin = packetPosition(packet);
-        return origin != null && isEffectHidden(state, world, config.worldSettings(world),
-                origin[0], origin[1], origin[2]);
+        return origin != null && isEffectHidden(state, world, config.worldSettings(world), origin[0], origin[1], origin[2]);
     }
 
     // Mutes only far-away sounds that are also behind solid blocks.
@@ -1864,14 +1882,15 @@ public final class RaytraceEngine {
 
     // Masks the packet's chunk snapshot with per-column ceilings. Earned cells stay real, so a
     // late chunk packet cannot overwrite a reveal.
-    private boolean maskChunkDataPacket(PlayerState state, World world, WorldSettings worldSettings, Object packet) {
+    // @return the masked packet to send (a private copy), or null if it could not be masked
+    private Object maskChunkDataPacket(PlayerState state, World world, WorldSettings worldSettings, Object packet) {
         if (!worldSettings.terrainMaskingEnabled()) {
-            return false;
+            return null;
         }
         int minY = world.getMinHeight();
         int sectionCount = (world.getMaxHeight() - minY) / 16;
         if (sectionCount <= 0) {
-            return false;
+            return null;
         }
         int chunkX;
         int chunkZ;
@@ -1881,15 +1900,15 @@ public final class RaytraceEngine {
             chunkZ = (int) NativeProtocol.get(packet, "z");
             chunkData = NativeProtocol.get(packet, "chunkData");
         } catch (Throwable throwable) {
-            return false;
+            return null;
         }
         SurfaceHeights.ChunkCeilings ceilings = ceilingsForChunk(world, worldSettings, chunkX, chunkZ, chunkData);
         if (ceilings == null) {
-            return false;
+            return null;
         }
         Object factory = NativeProtocol.palettedContainerFactoryRequired() ? palettedContainerFactory() : null;
         if (NativeProtocol.palettedContainerFactoryRequired() && factory == null) {
-            return false;
+            return null;
         }
         NativeProtocol.BlockVisibility visible = state.hasVisibleCellsInChunk(chunkX, chunkZ) ? visibilityFor(state) : null;
         return NativeProtocol.maskChunkData(packet, factory, sectionCount, minY,
@@ -1981,8 +2000,7 @@ public final class RaytraceEngine {
         if (cached != null && cached.expiresAt() > now) {
             return new SurfaceHeights.ChunkCeilings(cached.ceilings(), cached.oreCeilings(), true);
         }
-        SurfaceHeights.ChunkCeilings computed = SurfaceHeights.ceilingsForChunk(
-                world, worldSettings, chunkX, chunkZ, chunkData);
+        SurfaceHeights.ChunkCeilings computed = SurfaceHeights.ceilingsForChunk(world, worldSettings, chunkX, chunkZ, chunkData);
         if (computed == null || computed.values() == null || computed.oreValues() == null) {
             return null;
         }
@@ -2010,8 +2028,7 @@ public final class RaytraceEngine {
                 max = value;
             }
         }
-        return new CeilingEntry(computed.values(), computed.oreValues(), max,
-                now + CEILING_CACHE_NANOS, now + CEILING_BOUND_NANOS);
+        return new CeilingEntry(computed.values(), computed.oreValues(), max, now + CEILING_CACHE_NANOS, now + CEILING_BOUND_NANOS);
     }
 
     private static long chunkKey(int chunkX, int chunkZ) {
@@ -2019,8 +2036,7 @@ public final class RaytraceEngine {
     }
 
     private void storePointEntry(UUID worldId, int chunkX, int chunkZ, CeilingEntry entry) {
-        ConcurrentHashMap<Long, CeilingEntry> perWorld =
-                pointCeilings.computeIfAbsent(worldId, ignored -> new ConcurrentHashMap<>());
+        ConcurrentHashMap<Long, CeilingEntry> perWorld = pointCeilings.computeIfAbsent(worldId, ignored -> new ConcurrentHashMap<>());
         if (perWorld.size() > MAX_CEILING_ENTRIES_PER_WORLD) {
             long now = System.nanoTime();
             perWorld.values().removeIf(old -> old.boundUntil() <= now);
@@ -2250,10 +2266,7 @@ public final class RaytraceEngine {
     // Reports the first failure to build a per-player copy of a shared block-change packet.
     private void reportBlockCopyFailure() {
         if (loggedFirstBlockCopyFailure.compareAndSet(false, true)) {
-            plugin.getLogger().warning("Raytrace could not build a per-player block-change packet; "
-                    + "the affected update was dropped to avoid exposing hidden blocks. "
-                    + "The protection still runs, but this server version needs a compatibility "
-                    + "fix. (Further occurrences are not logged.)");
+            plugin.getLogger().warning("Raytrace could not build a per-player block-change packet; the affected update was dropped to avoid exposing hidden blocks. The protection still runs, but this server version needs a compatibility fix. (Further occurrences are not logged.)");
         }
     }
 
@@ -2302,8 +2315,7 @@ public final class RaytraceEngine {
         }
         int threshold = config.entityGrid().occlusionBlocks();
         try {
-            return BlockRay.countOccludingAuto(world, ex, ey, ez, x, y, z, threshold, null, 0,
-                    0, true) >= threshold;
+            return BlockRay.countOccludingAuto(world, ex, ey, ez, x, y, z, threshold, null, 0, 0, true) >= threshold;
         } catch (RuntimeException exception) {
             return false;
         }
@@ -2472,6 +2484,11 @@ public final class RaytraceEngine {
         double ey = eye.getY();
         double ez = eye.getZ();
         int threshold = entityGrid.occlusionBlocks();
+        // What the viewer rides, and who rides the viewer, always stay visible: removing them
+        // from the client would break the mount and desync movement.
+        Entity viewerVehicle = player.getVehicle();
+        int vehicleId = viewerVehicle == null ? -1 : viewerVehicle.getEntityId();
+        List<Entity> viewerPassengers = player.getPassengers();
 
         for (Entity entity : nearby) {
             EntitySnapshot snapshot = EntitySnapshot.read(entity);
@@ -2479,17 +2496,26 @@ public final class RaytraceEngine {
                 continue;
             }
             int entityId = snapshot.entityId();
+            boolean attached = entityId == vehicleId || containsEntityId(viewerPassengers, entityId);
             PlayerState.EntityCheck check = state.entityCheck(entityId);
             boolean shouldHide;
             boolean terrainHidden = false;
-            if (check != null && isVerdictFresh(check, ex, ey, ez, snapshot, cellVersion, tick)) {
+            if (!attached && check != null && isVerdictFresh(check, ex, ey, ez, snapshot, cellVersion, tick)) {
                 shouldHide = check.hidden;
                 terrainHidden = check.hiddenTerrain;
+            } else if (attached) {
+                shouldHide = false;
+                if (check == null) {
+                    check = state.newEntityCheck(entityId);
+                }
+                check.hidden = false;
+                check.hiddenTerrain = false;
+                // Re-judged from scratch once the viewer dismounts.
+                check.cellVersion = cellVersion - 1;
             } else {
                 try {
                     terrainHidden = isEntityInHiddenTerrain(state, world, worldSettings, snapshot.x(), snapshot.y(), snapshot.z());
-                    boolean occluded = !terrainHidden
-                            && isEntityOccluded(state, world, worldSettings, ex, ey, ez, snapshot.x(), snapshot.y(), snapshot.z(), snapshot.width(), snapshot.height(), threshold, false);
+                    boolean occluded = !terrainHidden && isEntityOccluded(state, world, worldSettings, ex, ey, ez, snapshot.x(), snapshot.y(), snapshot.z(), snapshot.width(), snapshot.height(), threshold, false);
                     shouldHide = terrainHidden || occluded;
                 } catch (RuntimeException exception) {
                     if (loggedFirstOcclusionFailure.compareAndSet(false, true)) {
@@ -2584,6 +2610,15 @@ public final class RaytraceEngine {
         }
     }
 
+    private static boolean containsEntityId(List<Entity> entities, int entityId) {
+        for (int i = 0, size = entities.size(); i < size; i++) {
+            if (entities.get(i).getEntityId() == entityId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static boolean isVerdictFresh(PlayerState.EntityCheck check, double ex, double ey, double ez, EntitySnapshot snapshot, int cellVersion, long tick) {
         if (check.cellVersion != cellVersion || tick - check.tick >= ENTITY_VERDICT_MAX_AGE_TICKS) {
             return false;
@@ -2608,8 +2643,7 @@ public final class RaytraceEngine {
         Object packet = NativeProtocol.newRemoveEntities(entityId);
         if (packet == null) {
             if (loggedFirstTrackerFailure.compareAndSet(false, true)) {
-                plugin.getLogger().warning("Raytrace could not build a remove-entity packet; "
-                        + "entities cannot be hidden after they were shown on this server version.");
+                plugin.getLogger().warning("Raytrace could not build a remove-entity packet; entities cannot be hidden after they were shown on this server version.");
             }
             return;
         }
