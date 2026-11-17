@@ -4,10 +4,10 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.heonezen</groupId>
     <artifactId>raytrace</artifactId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
     <packaging>jar</packaging>
     <name>Raytrace</name>
-    <description>Packet-level anti-ESP / anti-freecam</description>
+    <description>Packet-level anti-ESP and anti-freecam protection. Hides terrain, ores, entities and hidden activity from clients until a player can legitimately see it.</description>
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
@@ -28,16 +28,19 @@
             <version>${paper.version}</version>
             <scope>provided</scope>
         </dependency>
-        <!--
-            Netty is part of the server itself (the Minecraft server ships it), so this is
-            "provided" scope: the plugin is compiled against it, and the server supplies it at
-            runtime. It is the only thing Raytrace talks to besides the Bukkit API.
-        -->
+        <!-- Netty ships with the server, so it is "provided": compiled against, not bundled. -->
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-all</artifactId>
             <version>4.1.107.Final</version>
             <scope>provided</scope>
+        </dependency>
+        <!-- Unit tests only; never part of the plugin jar. -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
     <build>
@@ -66,6 +69,11 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-resources-plugin</artifactId>
                 <version>3.3.1</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
             </plugin>
         </plugins>
     </build>

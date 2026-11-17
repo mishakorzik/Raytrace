@@ -37,7 +37,7 @@ public final class RaytraceCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         engine.clearConfigCaches();
-        engine.resetAllPlayers();
+        engine.reloadAllPlayers();
         sender.sendMessage(Component.text("Raytrace configuration reloaded.", NamedTextColor.GREEN));
         return true;
     }

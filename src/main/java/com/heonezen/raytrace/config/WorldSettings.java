@@ -17,19 +17,27 @@ public final class WorldSettings {
     private final boolean hideVehicles;
     private final boolean hideDecorations;
     private final boolean hideItems;
+    private final boolean hideProjectiles;
+    private final boolean hideMisc;
     private final int surfaceBuffer;
 
     public WorldSettings(boolean enabled, List<LayerBand> rawLayers, boolean hideMobs, boolean hidePlayers, int surfaceBuffer) {
-        this(enabled, rawLayers, hideMobs, hidePlayers, true, true, true, surfaceBuffer);
+        this(enabled, rawLayers, hideMobs, hidePlayers, true, true, true, true, true, surfaceBuffer);
     }
 
     public WorldSettings(boolean enabled, List<LayerBand> rawLayers, boolean hideMobs, boolean hidePlayers, boolean hideVehicles, boolean hideDecorations, boolean hideItems, int surfaceBuffer) {
+        this(enabled, rawLayers, hideMobs, hidePlayers, hideVehicles, hideDecorations, hideItems, true, true, surfaceBuffer);
+    }
+
+    public WorldSettings(boolean enabled, List<LayerBand> rawLayers, boolean hideMobs, boolean hidePlayers, boolean hideVehicles, boolean hideDecorations, boolean hideItems, boolean hideProjectiles, boolean hideMisc, int surfaceBuffer) {
         this.enabled = enabled;
         this.hideMobs = hideMobs;
         this.hidePlayers = hidePlayers;
         this.hideVehicles = hideVehicles;
         this.hideDecorations = hideDecorations;
         this.hideItems = hideItems;
+        this.hideProjectiles = hideProjectiles;
+        this.hideMisc = hideMisc;
         this.surfaceBuffer = surfaceBuffer;
 
         List<LayerBand> sorted = new ArrayList<>(rawLayers);
@@ -66,6 +74,14 @@ public final class WorldSettings {
         return enabled && hideItems;
     }
 
+    public boolean hideProjectiles() {
+        return enabled && hideProjectiles;
+    }
+
+    public boolean hideMisc() {
+        return enabled && hideMisc;
+    }
+
     public boolean hides(EntityKind kind) {
         return switch (kind) {
             case PLAYER -> hidePlayers();
@@ -73,12 +89,14 @@ public final class WorldSettings {
             case VEHICLE -> hideVehicles();
             case DECOR -> hideDecorations();
             case ITEM -> hideItems();
+            case PROJECTILE -> hideProjectiles();
+            case MISC -> hideMisc();
             case OTHER -> false;
         };
     }
 
     public boolean hidesAnyEntity() {
-        return hideMobs() || hidePlayers() || hideVehicles() || hideDecorations() || hideItems();
+        return hideMobs() || hidePlayers() || hideVehicles() || hideDecorations() || hideItems() || hideProjectiles() || hideMisc();
     }
 
     public int maskCeilingY() {

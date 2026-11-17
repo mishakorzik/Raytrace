@@ -7,6 +7,8 @@ import com.heonezen.raytrace.engine.RaytraceEngine;
 import com.heonezen.raytrace.engine.SurfaceHeights;
 import com.heonezen.raytrace.util.NmsBlockReader;
 import com.heonezen.raytrace.util.BlockRay;
+import com.heonezen.raytrace.util.EntityKind;
+import com.heonezen.raytrace.util.EntityKinds;
 import org.bukkit.Chunk;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -43,8 +45,43 @@ public final class RayMathSelfTest {
         test.testSurfaceCeiling();
         test.testSensitiveBlocks();
         test.testShapeBoxes();
+        test.testEntityKinds();
         test.testMasking();
         return List.copyOf(test.results);
+    }
+
+    // Every entity an ESP shows must land in a hideable category (each class tried under its known names).
+    private void testEntityKinds() {
+        section("entity categories");
+        String entity = "net.minecraft.world.entity.";
+        kind("experience orb", EntityKind.ITEM, entity + "ExperienceOrb");
+        kind("dropped item", EntityKind.ITEM, entity + "item.ItemEntity");
+        kind("arrow", EntityKind.PROJECTILE, entity + "projectile.arrow.Arrow", entity + "projectile.Arrow");
+        kind("trident", EntityKind.PROJECTILE, entity + "projectile.arrow.ThrownTrident", entity + "projectile.ThrownTrident");
+        kind("fishing hook", EntityKind.PROJECTILE, entity + "projectile.FishingHook");
+        kind("fireball", EntityKind.PROJECTILE, entity + "projectile.hurtingprojectile.LargeFireball", entity + "projectile.LargeFireball");
+        kind("firework", EntityKind.PROJECTILE, entity + "projectile.FireworkRocketEntity");
+        kind("falling block", EntityKind.MISC, entity + "item.FallingBlockEntity");
+        kind("primed TNT", EntityKind.MISC, entity + "item.PrimedTnt");
+        kind("end crystal", EntityKind.MISC, entity + "boss.enderdragon.EndCrystal");
+        kind("eye of ender", EntityKind.MISC, entity + "projectile.EyeOfEnder");
+        kind("armor stand", EntityKind.DECOR, entity + "decoration.ArmorStand");
+        kind("zombie", EntityKind.MOB, entity + "monster.zombie.Zombie", entity + "monster.Zombie");
+        kind("lightning", EntityKind.OTHER, entity + "LightningBolt");
+    }
+
+    private void kind(String name, EntityKind expected, String... classNames) {
+        for (String className : classNames) {
+            Class<?> type;
+            try {
+                type = Class.forName(className, false, RayMathSelfTest.class.getClassLoader());
+            } catch (ClassNotFoundException | LinkageError missing) {
+                continue;
+            }
+            EntityKind actual = EntityKinds.of(type);
+            results.add(new Result("a " + name + " is classified as " + expected, actual == expected, actual == expected ? "" : String.valueOf(actual)));
+            return;
+        }
     }
 
     // The segment/box test that decides sight through stairs, slabs and fences.
@@ -78,8 +115,7 @@ public final class RayMathSelfTest {
     }
 
     private void testMaskingInternal() {
-        // The native packet path resolves the fake block through the server itself, so that is
-        // what has to be checked here: the three fake blocks have to be three different blocks.
+        // The fake blocks resolve through the server itself; they must be distinct blocks.
         Object stoneState = serverBlockState(Material.STONE);
         Object deepslateState = serverBlockState(Material.DEEPSLATE);
         Object netherrackState = serverBlockState(Material.NETHERRACK);
@@ -93,8 +129,7 @@ public final class RayMathSelfTest {
             return;
         }
 
-        // Every fake block must resolve to a real block, and the deepslate band must not come
-        // out as air.
+        // Every fake block must resolve to a real block, and the deepslate band must not come out as air.
         Object airState = serverBlockState(Material.AIR);
         check("the fake stone is not air", stoneState != null && !stoneState.equals(airState) ? 1 : 0, 1);
         check("the fake deepslate is not air", deepslateState != null && !deepslateState.equals(airState) ? 1 : 0, 1);
@@ -138,21 +173,17 @@ public final class RayMathSelfTest {
 
         WorldSettings settings = new WorldSettings(true, List.of(new LayerBand(64, Material.STONE), new LayerBand(0, Material.DEEPSLATE)), true, true, 8);
 
-        // Flat ground at Y=64 made of dirt, with a tree (leaves up to Y=80) standing on it.
-        // The surface must resolve to the ground (64), not to the top of the canopy (80).
+        // Dirt ground at Y=64 with a tree up to Y=80: the surface must be the ground, not the canopy.
         SurfaceGrid grid = new SurfaceGrid();
         grid.fill(0, 63, 60, 64, Material.DIRT);
         grid.fill(0, 63, 65, 80, Material.OAK_LEAVES);
         int forestCeiling = SurfaceHeights.effectiveCeiling(grid.world(), settings, 0, 0);
         check("a forest resolves its surface to the ground, not to the tree canopy", forestCeiling == 57 ? 1 : 0, 1);
         check("the tree canopy itself is never masked", forestCeiling <= 64 ? 1 : 0, 1);
-        // The hard cutoff is not raised by the soil buffer. Ores and containers between the
-        // normal ceiling and this Y are still hidden until their cell is earned.
+        // The soil buffer never raises the hard cutoff: ores in the buffer stay hidden.
         check("a forest keeps a hard cutoff at the ground", SurfaceHeights.hardCeiling(grid.world(), settings, 0, 0) == 64 ? 1 : 0, 1);
 
-        // Bare stone mountain, with a deep below-y so the mountain itself is in range: the
-        // surface block is stone, so it belongs to the hidden mass and the buffer does not
-        // apply - a mountain must not have a band of real stone on top.
+        // Bare stone mountain in range: stone is no soil, so no real band is kept on top.
         WorldSettings deep = new WorldSettings(true, List.of(new LayerBand(128, Material.STONE), new LayerBand(0, Material.DEEPSLATE)), true, true, 8);
         SurfaceGrid stone = new SurfaceGrid();
         stone.fill(0, 63, 64, 120, Material.STONE);
@@ -199,8 +230,7 @@ public final class RayMathSelfTest {
         check("a log is not sensitive", NmsBlockReader.isSensitiveMaterial(Material.OAK_LOG) ? 0 : 1, 1);
     }
 
-    // A tiny in-memory world for the surface checks: a grid of blocks plus the height map
-    // lookup derived from it.
+    // A tiny in-memory world for the surface checks: a grid of blocks plus the height map lookup derived from it.
     private static final class SurfaceGrid {
         private final java.util.Map<Long, Material> blocks = new java.util.HashMap<>();
         void fill(int x0, int x1, int y0, int y1, Material material) {
@@ -214,8 +244,7 @@ public final class RayMathSelfTest {
             return ((long) x << 32) | (y & 0xFFFFFFFFL);
         }
         World world() {
-            return (World) Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(),
-                    new Class<?>[]{World.class}, (proxy, method, args) -> {
+            return (World) Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(), new Class<?>[]{World.class}, (proxy, method, args) -> {
                         switch (method.getName()) {
                             case "isChunkLoaded":
                                 return true;
@@ -248,8 +277,7 @@ public final class RayMathSelfTest {
                     });
         }
         private Chunk chunk() {
-            return (Chunk) Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(),
-                    new Class<?>[]{Chunk.class}, (proxy, method, args) -> {
+            return (Chunk) Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(), new Class<?>[]{Chunk.class}, (proxy, method, args) -> {
                         if ("getBlock".equals(method.getName())) {
                             int x = (Integer) args[0];
                             int y = (Integer) args[1];
@@ -304,12 +332,7 @@ public final class RayMathSelfTest {
         check("the same corner clip is solid without the allowance", BlockRay.countOccluding(world(), 0.5, 64.5, 0.5, 10.5, 64.5, cornerTargetZ, 4), 1);
 
         clearGrid();
-        /**
-         * H0
-         * 0#
-         * The eye is in H, the target is in #, and the two 0 blocks share the corner.
-         * This is a wall seam, not a single block corner, so the diagonal must stay solid.
-         */
+        // Wall seam: the eye and the target are diagonal and both side blocks are solid, so the corner stays solid.
         fill(1, 1, 0, 0, 64, 64);
         fill(0, 0, 1, 1, 64, 64);
         check("a wall seam at a block corner is not clipped", BlockRay.countOccluding(world(), 0.5, 64.5, 0.5, 1.5, 64.5, 1.5, 4, 1), 1);
@@ -436,8 +459,7 @@ public final class RayMathSelfTest {
         }
     }
     private static World world() {
-        Chunk chunk = (Chunk) Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(),
-                new Class<?>[]{Chunk.class}, (proxy, method, args) -> {
+        Chunk chunk = (Chunk) Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(), new Class<?>[]{Chunk.class}, (proxy, method, args) -> {
                     if ("getBlock".equals(method.getName())) {
                         int x = (Integer) args[0];
                         int y = (Integer) args[1];
@@ -449,8 +471,7 @@ public final class RayMathSelfTest {
                     }
                     return null;
                 });
-        return (World) Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(),
-                new Class<?>[]{World.class}, (proxy, method, args) -> {
+        return (World) Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(), new Class<?>[]{World.class}, (proxy, method, args) -> {
                     switch (method.getName()) {
                         case "isChunkLoaded":
                             return true;
@@ -472,14 +493,11 @@ public final class RayMathSelfTest {
         return Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(), new Class<?>[]{Block.class}, (proxy, method, args) -> "getType".equals(method.getName()) ? material : null);
     }
     private static Plugin testPlugin() {
-        // A minimal but complete configuration, so that building a real RaytraceConfig from it
-        // does not print "config.yml has no 'worlds' section" warnings into the server console
-        // while the self-test runs.
+        // A minimal but complete configuration, so the self-test prints no config warnings.
         YamlConfiguration configuration = new YamlConfiguration();
         configuration.set("worlds.world.enabled", true);
         configuration.set("worlds.world.layers", List.of(Map.of("below-y", 64, "block", "STONE")));
-        return (Plugin) Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(),
-                new Class<?>[]{Plugin.class}, (proxy, method, args) -> {
+        return (Plugin) Proxy.newProxyInstance(RayMathSelfTest.class.getClassLoader(), new Class<?>[]{Plugin.class}, (proxy, method, args) -> {
                     switch (method.getName()) {
                         case "getConfig":
                             return configuration;

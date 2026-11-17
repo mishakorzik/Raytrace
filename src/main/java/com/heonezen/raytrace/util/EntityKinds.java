@@ -1,8 +1,6 @@
 package com.heonezen.raytrace.util;
 
-// Classifies server entity classes. The classification walks the class hierarchy by simple
-// name, so it does not depend on the package layout, which moved between Minecraft versions
-// (for example the minecart classes). Results are cached per class.
+// Classifies server entity classes.
 public final class EntityKinds {
 
     private static final Class<?> PLAYER = load("net.minecraft.world.entity.player.Player");
@@ -15,8 +13,7 @@ public final class EntityKinds {
         }
     };
 
-    private EntityKinds() {
-    }
+    private EntityKinds() {}
     // The kind of a server entity class (an entity handle's class or a spawn packet's base class).
     public static EntityKind of(Class<?> nmsClass) {
         return nmsClass == null ? EntityKind.OTHER : CACHE.get(nmsClass);
@@ -34,8 +31,15 @@ public final class EntityKinds {
                 case "VehicleEntity", "AbstractMinecart", "AbstractMinecartContainer", "Minecart", "AbstractBoat", "AbstractChestBoat", "Boat", "ChestBoat", "Raft", "ChestRaft" -> {
                     return EntityKind.VEHICLE;
                 }
-                case "ItemEntity" -> {
+                case "ItemEntity", "ExperienceOrb" -> {
                     return EntityKind.ITEM;
+                }
+                // Every arrow, trident, thrown item, fireball, skull, bullet, hook, firework and wind charge extends Projectile.
+                case "Projectile" -> {
+                    return EntityKind.PROJECTILE;
+                }
+                case "FallingBlockEntity", "PrimedTnt", "EndCrystal", "EyeOfEnder", "EvokerFangs", "AreaEffectCloud", "Interaction", "OminousItemSpawner" -> {
+                    return EntityKind.MISC;
                 }
                 default -> {
                     // keep walking up
@@ -46,8 +50,9 @@ public final class EntityKinds {
     }
     private static Class<?> load(String name) {
         try {
-            return Class.forName(name);
-        } catch (ClassNotFoundException exception) {
+            // Only used for isAssignableFrom: the class does not need to be initialised.
+            return Class.forName(name, false, EntityKinds.class.getClassLoader());
+        } catch (ClassNotFoundException | LinkageError exception) {
             return null;
         }
     }

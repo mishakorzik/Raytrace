@@ -7,26 +7,18 @@ import org.bukkit.World;
 public final class BlockRay {
     // A block crossed for less than this distance is treated as a corner clip.
     private static final double CORNER_CLIP_SIZE = 0.12;
-    private BlockRay() {
-    }
-    // Counts solid blocks strictly between two points, stopping after {@code stopAfter}.
+    private BlockRay() {}
+    // Counts solid blocks strictly between two points, stopping after stopAfter.
     public static int countOccluding(World world, double ex, double ey, double ez, double tx, double ty, double tz, int stopAfter) {
         return countOccluding(world, ex, ey, ez, tx, ty, tz, stopAfter, null, 0, false, 0);
     }
-    // Same as above, but lets a ray pass up to {@code allowedCornerSkips} thin corner clips.
-    // This makes partially visible entities appear smoothly without opening a path through
-    // a wall running along a corner.
+    // Same as above, but lets a ray pass up to allowedCornerSkips thin corner clips.
     public static int countOccluding(World world, double ex, double ey, double ez, double tx, double ty, double tz, int stopAfter, int allowedCornerSkips) {
         return countOccluding(world, ex, ey, ez, tx, ty, tz, stopAfter, null, 0, false, allowedCornerSkips);
     }
 
-    // Fastest safe variant for the engine. {@code packetThread} callers (Netty) must never touch
-    // Bukkit, so they only use direct server reads; region-thread callers use the same direct
-    // reads when they are available and fall back to Bukkit otherwise.
-    public static int countOccludingAuto(World world, double ex, double ey, double ez,
-                                         double tx, double ty, double tz, int stopAfter,
-                                         CellVisitor visitor, int gridSize, int allowedCornerSkips,
-                                         boolean packetThread) {
+    // Fastest safe variant for the engine.
+    public static int countOccludingAuto(World world, double ex, double ey, double ez, double tx, double ty, double tz, int stopAfter, CellVisitor visitor, int gridSize, int allowedCornerSkips, boolean packetThread) {
         boolean nms = packetThread || NmsBlockReader.available();
         return countOccluding(world, ex, ey, ez, tx, ty, tz, stopAfter, visitor, gridSize, nms, allowedCornerSkips);
     }
@@ -108,21 +100,14 @@ public final class BlockRay {
                         chunk = world.isChunkLoaded(cx, cz) ? world.getChunkAt(cx, cz) : null;
                     }
                 }
-                // A thin segment is only a corner clip if the corner itself is open. If
-                // another solid block shares that edge, the line is grazing a wall seam
-                // and must not pass through the concave corner.
-                if (cornerClip && !isOpenCorner(world, nmsSafe, source, x, y, z, entryAxis, exitAxis,
-                        stepX, stepY, stepZ, chunk, nmsChunk, chunkX, chunkZ)) {
+                // A thin segment is only a corner clip if the corner itself is open.
+                if (cornerClip && !isOpenCorner(world, nmsSafe, source, x, y, z, entryAxis, exitAxis, stepX, stepY, stepZ, chunk, nmsChunk, chunkX, chunkZ)) {
                     cornerClip = false;
                 }
                 boolean occluding;
                 if (nmsSafe) {
-                    // Partial blocks (stairs, slabs) answer "canOcclude" incorrectly for a ray:
-                    // canOcclude() is true even though the voxel is not full, so the check must
-                    // go through the actual shape to let rays through the missing part (the
-                    // stair notch, the empty half of a slab) while blocking the solid step.
-                    occluding = NmsBlockReader.occludesRay(nmsChunk, x, y, z, ex, ey, ez,
-                            tx, ty, tz);
+                    // Partial blocks (stairs, slabs) are tested by their real shape, so rays pass their open parts.
+                    occluding = NmsBlockReader.occludesRay(nmsChunk, x, y, z, ex, ey, ez, tx, ty, tz);
                 } else {
                     occluding = chunk != null && chunk.getBlock(x & 15, y, z & 15).getType().isOccluding();
                 }
@@ -170,13 +155,8 @@ public final class BlockRay {
             }
         }
     }
-    // Checks the two blocks diagonally opposite the current voxel around the edge the ray
-    // is crossing. A single block corner is open; a wall corner has a solid diagonal
-    // neighbour and is not.
-    private static boolean isOpenCorner(World world, boolean nmsSafe, Object source,
-                                        int x, int y, int z, int entryAxis, int exitAxis,
-                                        int stepX, int stepY, int stepZ,
-                                        Chunk chunk, Object nmsChunk, int chunkX, int chunkZ) {
+    // Checks the two blocks diagonally opposite the current voxel around the edge the ray is crossing.
+    private static boolean isOpenCorner(World world, boolean nmsSafe, Object source, int x, int y, int z, int entryAxis, int exitAxis, int stepX, int stepY, int stepZ, Chunk chunk, Object nmsChunk, int chunkX, int chunkZ) {
         if (entryAxis < 0 || entryAxis == exitAxis) {
             return false;
         }
@@ -220,10 +200,7 @@ public final class BlockRay {
                 secondZ -= exitStep;
             }
         }
-        return !isOccludingAt(world, nmsSafe, source, firstX, firstY, firstZ,
-                chunk, nmsChunk, chunkX, chunkZ)
-                && !isOccludingAt(world, nmsSafe, source, secondX, secondY, secondZ,
-                chunk, nmsChunk, chunkX, chunkZ);
+        return !isOccludingAt(world, nmsSafe, source, firstX, firstY, firstZ, chunk, nmsChunk, chunkX, chunkZ) && !isOccludingAt(world, nmsSafe, source, secondX, secondY, secondZ, chunk, nmsChunk, chunkX, chunkZ);
     }
     private static int axisValue(int axis, int valueX, int valueY, int valueZ) {
         return axis == 0 ? valueX : (axis == 1 ? valueY : valueZ);

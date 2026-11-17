@@ -30,8 +30,7 @@ public final class RaytracePlugin extends JavaPlugin {
         this.config = new RaytraceConfig(this);
         this.engine = new RaytraceEngine(this, config);
 
-        // No other plugin is needed: each player's connection gets its own packet handler
-        // (see RaytraceEngine#installNativeHandler).
+        // No other plugin is needed: each player's connection gets its own packet handler (see RaytraceEngine#installNativeHandler).
         Bukkit.getPluginManager().registerEvents(new PlayerActivityListener(config, engine), this);
 
         RaytraceCommand command = new RaytraceCommand(config, engine);
@@ -100,8 +99,7 @@ public final class RaytracePlugin extends JavaPlugin {
                     }
                 }
             } catch (Throwable throwable) {
-                getLogger().log(java.util.logging.Level.WARNING,
-                        "Raytrace self-check could not be run", throwable);
+                getLogger().log(java.util.logging.Level.WARNING, "Raytrace self-check could not be run", throwable);
             }
             try {
                 List<NativePacketSelfTest.Result> results = NativePacketSelfTest.run();
@@ -120,7 +118,27 @@ public final class RaytracePlugin extends JavaPlugin {
                 getLogger().log(java.util.logging.Level.WARNING, "Raytrace block-update copy self-check could not be run", throwable);
             }
             runChunkMaskSelfTest();
+            runCoverageSelfTest();
         }, 100L);
+    }
+
+    // With the configured grid: a deep shaft's far walls must turn real for an idle player, nothing behind them. Runs off-thread.
+    private void runCoverageSelfTest() {
+        org.bukkit.configuration.ConfigurationSection grids = getConfig().getConfigurationSection("grids");
+        Bukkit.getAsyncScheduler().runNow(this, scheduledTask -> {
+            try {
+                for (com.heonezen.raytrace.engine.FrontierSelfCheck.Outcome outcome : com.heonezen.raytrace.engine.FrontierSelfCheck.run(this, grids)) {
+                    String detail = outcome.refined() + " of " + outcome.visible() + " visible far wall cells revealed (the ray pattern alone: " + outcome.patternOnly() + "), " + outcome.leaks() + " cells behind walls";
+                    if (outcome.passed()) {
+                        getLogger().info("Raytrace ray-coverage self-check passed for " + outcome.shaft() + " (" + detail + ").");
+                    } else {
+                        getLogger().warning("Raytrace ray-coverage self-check FAILED for " + outcome.shaft() + ": " + detail + ".");
+                    }
+                }
+            } catch (Throwable throwable) {
+                getLogger().log(java.util.logging.Level.WARNING, "Raytrace ray-coverage self-check could not be run", throwable);
+            }
+        });
     }
 
     // Encodes, masks and decodes a real chunk on the region that owns it.

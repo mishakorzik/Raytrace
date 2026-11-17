@@ -11,12 +11,7 @@ import java.lang.reflect.Method;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Read-only block access that is safe on any thread. Bukkit accessors assert the tick thread on
- * Folia/Canvas and allocate a wrapper per block; {@code LevelChunk#getBlockState} is a plain
- * data read. Every member is bound once as a method handle, so a block read is a few direct
- * calls. Missing pieces degrade to "not available".
- */
+// Read-only block access that is safe on any thread.
 public final class NmsBlockReader {
 
     private static final MethodType OBJ_TO_OBJ = MethodType.methodType(Object.class, Object.class);
@@ -31,19 +26,14 @@ public final class NmsBlockReader {
     private static final Method GET_BUKKIT_MATERIAL;
     private static final boolean AVAILABLE;
 
-    // Shape access for partial blocks (stairs, slabs, ...): canOcclude() only tells whether a
-    // block is a full opaque cube, so a stair with a hole on the ray's side would be wrongly
-    // treated as a full wall. The shape clip below tests the actual opaque boxes instead.
-    // Missing pieces degrade to the old behaviour (canOcclude() only).
+    // Shape access for partial blocks: canOcclude() alone treats a stair as a full wall.
     private static final Method GET_SHAPE;
     private static final Method SHAPE_CLIP;
     private static final Method SHAPE_IS_EMPTY;
     private static final Method SHAPE_IS_FULL;
     private static final Constructor<?> BLOCK_POS_CTOR;
     private static final Constructor<?> VEC3_CTOR;
-    // VoxelShape#toAabbs and the AABB bounds: lets a partial shape be cached as plain numbers and
-    // tested with an allocation-free segment/box check instead of a reflective clip() that
-    // builds two Vec3, a BlockPos and a box list for every voxel a ray crosses.
+    // VoxelShape#toAabbs and AABB bounds: partial shapes are cached as numbers and tested without allocation.
     private static final Method SHAPE_TO_AABBS;
     private static final java.lang.reflect.Field[] AABB_BOUNDS;
     private static final boolean SHAPES_AVAILABLE;
@@ -65,9 +55,7 @@ public final class NmsBlockReader {
     private static final ConcurrentHashMap<Object, Boolean> SENSITIVE_STATES = new ConcurrentHashMap<>();
     // The same goes for their Bukkit material: the reflective call is paid once per state.
     private static final ConcurrentHashMap<Object, Material> MATERIALS = new ConcurrentHashMap<>();
-    // Per block state, the cached voxel shape that needs a clip test (a VoxelShape, or
-    // Boolean.FALSE when the shape test can never block a sight line: empty, full, or not
-    // solid-rendered like glass).
+    // Per block state: its boxes (double[]), a VoxelShape, or Boolean.FALSE when the shape never matters.
     private static final ConcurrentHashMap<Object, Object> SHAPE_CACHE = new ConcurrentHashMap<>();
 
     static {
@@ -129,10 +117,7 @@ public final class NmsBlockReader {
             clipMethod.setAccessible(true);
             emptyMethod = shapeClass.getMethod("isEmpty");
             emptyMethod.setAccessible(true);
-            // The "is this shape the full cube" check has three names across versions:
-            // isCubeLike() (26.x, protected), isFullBlock() (older). Full shapes are excluded
-            // from the shape clip test because canOcclude() already covers them, and glass
-            // (a full cube that stays see-through) must not start blocking after this change.
+            // The "is this shape the full cube" check has three names across versions: isCubeLike() (26.x, protected), isFullBlock() (older).
             try {
                 fullMethod = shapeClass.getDeclaredMethod("isCubeLike");
             } catch (NoSuchMethodException ignored) {
@@ -180,8 +165,7 @@ public final class NmsBlockReader {
         SHAPE_IS_FULL = fullMethod;
         BLOCK_POS_CTOR = posCtor;
         VEC3_CTOR = vecCtor;
-        SHAPES_AVAILABLE = shapeMethod != null && clipMethod != null && emptyMethod != null
-                && fullMethod != null && posCtor != null && vecCtor != null;
+        SHAPES_AVAILABLE = shapeMethod != null && clipMethod != null && emptyMethod != null && fullMethod != null && posCtor != null && vecCtor != null;
         SHAPE_FAILURE = SHAPES_AVAILABLE ? null : shapeFailure;
     }
 
@@ -202,8 +186,7 @@ public final class NmsBlockReader {
         return SHAPE_FAILURE;
     }
 
-    // The chunk source (the object that hands out loaded chunks) of a world, or null. Resolve it
-    // once per ray or scan and pass it to {@link #chunkAt(Object, int, int)}.
+    // The chunk source (the object that hands out loaded chunks) of a world, or null.
     public static Object chunkSource(World world) {
         if (!AVAILABLE || world == null) {
             return null;
@@ -270,8 +253,7 @@ public final class NmsBlockReader {
         }
     }
 
-    // Blocks that reveal something valuable when seen through a wall: ores, containers,
-    // spawners and similar block entities. Used only inside the soil surface buffer.
+    // Blocks that reveal something valuable when seen through a wall: ores, containers, spawners and similar block entities.
     public static boolean isSensitiveBlockState(Object state) {
         if (state == null) {
             return true;
@@ -322,16 +304,8 @@ public final class NmsBlockReader {
         return occludes(stateAt(chunk, x, y, z));
     }
 
-    /**
-     * The sight verdict for this voxel: the actual shape decides for partial shapes (stairs,
-     * slabs, fences, ...). A ray through a missing part of the shape (the stair notch, the
-     * empty half of a slab, the gaps of a fence) is clear, a ray through a solid box is
-     * blocked. Full cubes and empty shapes keep the canOcclude() verdict - in particular glass
-     * is a full cube and stays see-through. Resolved states are cached per block state;
-     * anything unresolvable falls back to canOcclude().
-     */
-    public static boolean occludesRay(Object chunk, int worldX, int worldY, int worldZ,
-                                      double ex, double ey, double ez, double tx, double ty, double tz) {
+    // The sight verdict for this voxel: the actual shape decides for partial shapes (stairs, slabs, fences, ...).
+    public static boolean occludesRay(Object chunk, int worldX, int worldY, int worldZ, double ex, double ey, double ez, double tx, double ty, double tz) {
         if (!AVAILABLE || chunk == null) {
             return false;
         }
@@ -350,8 +324,7 @@ public final class NmsBlockReader {
             shape = SHAPE_CACHE.get(state);
         }
         if (shape == null || Boolean.FALSE.equals(shape)) {
-            // Full cube (already covered by canOcclude()), empty, transparent, or shape
-            // lookup failed: keep the coarse verdict.
+            // Full cube (already covered by canOcclude()), empty, transparent, or shape lookup failed: keep the coarse verdict.
             return base;
         }
         if (shape instanceof double[] boxes) {
@@ -362,7 +335,7 @@ public final class NmsBlockReader {
             Object end = VEC3_CTOR.newInstance(tx, ty, tz);
             Object pos = BLOCK_POS_CTOR.newInstance(worldX, worldY, worldZ);
             Object hit = SHAPE_CLIP.invoke(shape, start, end, pos);
-            // Old versions return Optional<Vec3>; 26.x returns a nullable BlockHitResult.
+            // Old versions return Optional ; 26.x returns a nullable BlockHitResult.
             if (hit instanceof Optional) {
                 return ((Optional<?>) hit).isPresent();
             }
@@ -380,14 +353,10 @@ public final class NmsBlockReader {
                 return Boolean.FALSE;
             }
             if ((Boolean) SHAPE_IS_EMPTY.invoke(shape) || (Boolean) SHAPE_IS_FULL.invoke(shape)) {
-                // Air never blocks; a full cube is already covered by canOcclude() - and glass,
-                // which is a full cube but see-through, must stay see-through.
+                // Air never blocks; full cubes are covered by canOcclude(), so glass stays see-through.
                 return Boolean.FALSE;
             }
-            // Every other partial shape is tested with the clip: stairs, slabs, fences, walls
-            // and similar pass rays only through their actually solid boxes. (Fences e.g. return
-            // false from useShapeForLightOcclusion(), which is the light-engine flag, not the
-            // sight shape - applying it would keep them solid.)
+            // Every other partial shape blocks rays only with its solid boxes.
             double[] boxes = boxesOf(shape);
             return boxes != null ? boxes : shape;
         } catch (Throwable throwable) {
@@ -395,8 +364,7 @@ public final class NmsBlockReader {
         }
     }
 
-    // The shape's boxes as {minX, minY, minZ, maxX, maxY, maxZ} groups relative to the block,
-    // or null when they cannot be read (the reflective clip is used then).
+    // The shape's boxes as {minX, minY, minZ, maxX, maxY, maxZ} groups, or null (the reflective clip is used then).
     private static double[] boxesOf(Object shape) {
         if (SHAPE_TO_AABBS == null || AABB_BOUNDS == null) {
             return null;
@@ -419,10 +387,8 @@ public final class NmsBlockReader {
         }
     }
 
-    // Whether the segment from (sx, sy, sz) to (tx, ty, tz) touches any of the boxes placed at
-    // this block. Slab test, no allocation; a segment starting or ending inside a box counts.
-    public static boolean segmentHitsBoxes(double[] boxes, int blockX, int blockY, int blockZ,
-                                    double sx, double sy, double sz, double tx, double ty, double tz) {
+    // Whether the segment from (sx, sy, sz) to (tx, ty, tz) touches any of the boxes placed at this block.
+    public static boolean segmentHitsBoxes(double[] boxes, int blockX, int blockY, int blockZ, double sx, double sy, double sz, double tx, double ty, double tz) {
         double dx = tx - sx;
         double dy = ty - sy;
         double dz = tz - sz;

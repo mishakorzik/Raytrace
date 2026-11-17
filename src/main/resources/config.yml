@@ -1,125 +1,242 @@
+
+#  Raytrace - packet-level anti-ESP / anti-X-ray
+#
+#  How it works: every player gets fake terrain underground, and only the parts they could
+#  really see become real for them. Mobs, players and other entities behind walls are not sent
+#  to their client at all. Nothing here changes the world itself - only what each client gets.
+#
+#  Every option below says what it does, what a lower and a higher value change, and its
+#  allowed range. Apply changes with /raytrace reload.
+#  A missing option takes the value shown in this file. A value that is not a number (or not
+#  true/false), or lies outside its range, is reported in the console and replaced by the
+#  default or the nearest allowed value - the plugin keeps running either way.
+#  Times are in microseconds (1000 = 1 ms); intervals in ticks (20 ticks = 1 second).
+
 worlds:
+  # One section per world, by folder name. Worlds that are not listed are not protected.
   world:
+    # Turns the whole protection on or off in this world. A listed world without this line is
+    # protected.
     enabled: true
-    # Checked top-down. Each band extends down to the next below-y, or to bedrock.
-    # Every block below below-y is replaced unless the viewer has earned that cell.
+
+    # Fake terrain, from the top down. Every block below the highest below-y is replaced by the
+    # fake block of its band until the viewer earns that spot; each band reaches down to the
+    # next below-y, the last one to bedrock. Pick blocks that look natural at that depth.
+    #   A lower top below-y (e.g. 64): less to hide, but the mountains above it stay real -
+    #   their ores and caves can be seen through.
+    #   A higher top below-y (e.g. 256): hides everything, mountains included; a little more
+    #   work per chunk. The real surface is detected per column anyway (see surface-buffer),
+    #   so open air above the ground is never filled with fake stone.
     layers:
       - below-y: 128
         block: STONE
       - below-y: 0
         block: DEEPSLATE
-    # Hide mobs (animals, monsters, villagers) behind walls or inside unearned terrain.
+
+    # Which entities are taken away from players who cannot see them (behind walls, or inside
+    # terrain they have not uncovered). Turning a kind off sends it to everyone as usual - an
+    # ESP then shows it through walls.
+    #
+    # Animals, monsters, villagers, golems...
     hide-mobs: true
-    # Hide other players behind walls or inside unearned terrain.
+
+    # Other players. The tab list still shows them; only their position is withheld.
     hide-players: true
-    # Hide minecarts of every kind, boats and chest boats.
+
+    # Minecarts of every kind (also chest, hopper and TNT minecarts) and boats.
     hide-vehicles: true
-    # Hide item frames, paintings, armor stands and display entities.
+
+    # Item frames, paintings, armor stands, leash knots and display entities.
     hide-decorations: true
-    # Hide dropped items.
+
+    # Dropped items and experience orbs (they give away farms, kills and stashes).
     hide-items: true
-    # Natural terrain this close to the real surface stays real. This keeps beaches, oceans,
-    # ice, tree lines and cave entrances visually correct. The value is measured in blocks
-    # above the cutoff: for soil, the top surface-buffer blocks are not replaced by fake stone.
-    # Ores, chests, spawners and similar valuable blocks inside this buffer are still hidden
-    # until the player earns their cell. Larger = smoother surface but a larger hidden band;
-    # smaller = stricter but blockier. Negative disables surface awareness and uses below-y.
+
+    # Arrows, tridents, thrown items, fireballs, wither skulls, shulker bullets, fishing hooks,
+    # fireworks and wind charges. The viewer's own projectiles always stay visible.
+    hide-projectiles: true
+
+    # Falling blocks, primed TNT, end crystals, eyes of ender, evoker fangs, potion clouds,
+    # interaction hitboxes and ominous item spawners.
+    hide-misc: true
+
+    # How many blocks of soil at the real surface stay real (dirt, sand, gravel, snow, ice...).
+    # It keeps beaches, riverbeds, paths and cave mouths looking right. Ores, chests, spawners
+    # and similar blocks inside this band are still hidden until the player earns them.
+    #   Lower (2): stricter, but the ground near the surface may look patchy from far away.
+    #   Higher (6-8): smoother surface, but a deeper real layer under the ground.
+    #   -1: no surface detection at all; everything below below-y is fake. Range -1 to 64.
     surface-buffer: 4
 
   world_nether:
+    # Same options as for "world" above.
     enabled: true
     layers:
       - below-y: 128
         block: NETHERRACK
-    # Hide mobs (animals, monsters, villagers) behind walls or inside unearned terrain.
     hide-mobs: true
-    # Hide other players behind walls or inside unearned terrain.
     hide-players: true
-    # Hide minecarts of every kind, boats and chest boats.
     hide-vehicles: true
-    # Hide item frames, paintings, armor stands and display entities.
     hide-decorations: true
-    # Hide dropped items.
     hide-items: true
+    hide-projectiles: true
+    hide-misc: true
     surface-buffer: 2
 
   world_the_end:
+    # Same options as for "world" above.
     enabled: true
     layers:
       - below-y: 128
         block: END_STONE
-    # Hide mobs (animals, monsters, villagers) behind walls or inside unearned terrain.
     hide-mobs: true
-    # Hide other players behind walls or inside unearned terrain.
     hide-players: true
-    # Hide minecarts of every kind, boats and chest boats.
     hide-vehicles: true
-    # Hide item frames, paintings, armor stands and display entities.
     hide-decorations: true
-    # Hide dropped items.
     hide-items: true
+    hide-projectiles: true
+    hide-misc: true
     surface-buffer: 2
 
-# Grids and scan limits. All intervals are in server ticks (20 ticks = 1 second).
 grids:
+  #  Terrain: what becomes real for a player, and how much CPU that may cost.
   blocks:
-    # Size of one terrain cell: a cube of size x size x size blocks. When a player sees part
+    # Size of one terrain cell, a cube of size x size x size blocks. When a player sees any part
     # of a cell, the whole cell becomes real for them.
-    # Bigger = less CPU, but more real blocks appear around what the player looks at (shallow
-    # ores can show). Smaller = more precise hiding, but more updates. Range 1-16.
-    # This is also the effective "beam width": the rays are mathematical lines, so a bigger
-    # cell is what makes each ray reveal a wider swath. There is no separate ray-width option.
+    #   Lower (4): very precise - only what is really in view turns real - but many more cells,
+    #   rays and block packets.
+    #   Higher (16): cheapest, but a glance reveals a big area around the spot (shallow ores
+    #   next to a cave wall can show). Range 1-16.
+    #   8 is the balance; it also lines up with chunk borders, which keeps edges clean.
     size: 8
-    # How many solid blocks a terrain ray may pass through before it stops.
-    # Terrain is only revealed through as many solid blocks as entities.occlusion-blocks allows. Range 1-8.
-    occlusion-grace-blocks: 2
-    # How often the full terrain scan may run. 2 = up to 10 times per second.
-    # Higher = less CPU, but far terrain appears later. What the player looks at directly
-    # still updates every tick while they move or turn. Range 1-20.
-    scan-ticks: 2
-    # Skip a full scan unless the player moved at least this many blocks since the last one.
-    # Higher = less CPU, slower updates while walking. Range 0.1-16.0.
-    move-threshold-blocks: 1.2
-    # Skip a full scan unless the player turned left or right at least this many degrees. Range 0.1-120.0.
-    yaw-threshold-degrees: 6.0
-    # Skip a full scan unless the player looked up or down at least this many degrees. Range 0.1-120.0.
-    pitch-threshold-degrees: 4.0
-    # Time limit of one scan for one player, in microseconds (1000 = 1 ms). When it runs out,
-    # the scan stops and the next one continues. Lower it on a busy server; raise it only if
-    # terrain appears too slowly on a quiet one. Range 100-20000.
-    max-scan-micros: 1000
-    # Most block steps all rays together may take in one scan. A second safety limit next to
-    # max-scan-micros.
-    max-steps-per-scan: 80000
-    # How many rays make up the full scan pattern. More = fewer missed cells at a distance,
-    # more CPU. Fewer = faster, but gaps may appear far away. The scan already scales the
-    # pattern down to this budget; raising the cell size is usually a better first saving. Range 100-10000.
-    target-total-rays: 2600
-    # Most blocks revealed to one player in one scan. A size 8 cell is 512 blocks, so 40000
-    # is about 78 cells. The rest waits for the next scan. At least one cell is always revealed. Range 10000-100000.
-    max-revealed-blocks-per-scan: 40000
 
-  entities:
-    # How many sample points are checked across an entity's body: 4 means up to 4x4 = 16 rays.
-    # A clearly visible entity costs only 1 ray; the other points are used only when its centre
-    # is blocked, so a mob peeking around a corner still shows. Bigger = smoother edges, more
-    # CPU for hidden entities. Smaller = faster, coarser edges. Range 1-9.
-    size: 4
-    # How often entities are rechecked. 2 = 10 times per second. An entity is not rechecked
-    # while neither it nor the player has moved. Range 1-20.
+    # How many solid blocks a terrain ray walks through before it stops. Terrain only becomes
+    # real through as many solid blocks as entities.occlusion-blocks allows, so a ray that goes
+    # on past that point does nothing useful.
+    #   Keep it equal to entities.occlusion-blocks (1). Higher only costs CPU. Range 1-8.
+    occlusion-grace-blocks: 1
+
+    # How often a player's full terrain scan may run, in ticks.
+    #   Lower (1): far terrain turns real faster while walking; up to twice the scan CPU.
+    #   Higher (4): less CPU, but far terrain catches up later. Range 1-20.
+    #   Not affected: what the player looks at directly is updated every tick they move or turn.
     scan-ticks: 2
-    # Only entities within this many blocks are checked. Keep it at least as large as the
-    # server's entity-tracking-range, or farther entities are never hidden. Range 8-200.
+
+    # A new scan only starts once the player has moved or turned at least this much since the
+    # last one. Once a player stops, three more passes run with the rays shifted in between the
+    # earlier ones, and far surfaces the rays only grazed (the bottom of a deep shaft, a far
+    # ravine wall) are followed cell by cell with rays aimed straight at them. After that,
+    # scanning pauses until the player moves, turns or breaks a block.
+    #   Lower values: more frequent scans while walking slowly, more CPU.
+    #   Higher values: fewer scans; terrain updates in bigger steps.
+    # Blocks moved. Range 0.1-16.0.
+    move-threshold-blocks: 1.2
+
+    # Degrees turned left or right. Range 0.1-120.0.
+    yaw-threshold-degrees: 6.0
+
+    # Degrees looked up or down. Range 0.1-120.0.
+    pitch-threshold-degrees: 4.0
+
+    # A scan never has to finish at once: whatever a limit cuts off just continues in the next
+    # scan. Lower limits therefore only make far terrain turn real a little later - they never
+    # make it wrong, and they never reveal anything.
+
+    # Time ONE player's scan may take.
+    #   Lower (500): smoother ticks with many players; far terrain fills in more slowly.
+    #   Higher (2000): faster fill-in; only worth it with few players. Range 200-10000.
+    max-scan-micros: 1000
+
+    # Time ALL players' scans together may take per tick, per server thread (Paper: the main
+    # thread; Folia: each region thread). This is the limit that protects the server: with 6000
+    # the terrain scans never take more than about 6 ms of a 50 ms tick, however many players
+    # move at once - the ones over the limit simply scan on the next tick.
+    #   Lower (4000): for busy Paper servers (100+ players) or an already high MSPT.
+    #   Higher (10000-12000): faster fill-in in crowds; fine while your normal MSPT plus this
+    #   plus entities.max-scan-micros-per-tick stays below about 45 ms. Range 1000-40000.
+    #   It only matters when many players move at the same moment (roughly 12+ on default
+    #   settings); with fewer, max-scan-micros is the limit that applies.
+    max-scan-micros-per-tick: 6000
+
+    # Block steps all rays of one scan may take together. A backstop that does not depend on
+    # CPU speed: 80000 steps take about 1 ms on a typical CPU, so normally max-scan-micros
+    # stops a scan first.
+    #   Lower: caps work per scan even on a slow or overloaded CPU.
+    #   Higher (150000+): only on a very fast CPU, if scans stop here before their time runs
+    #   out. Range 10000-1000000.
+    max-steps-per-scan: 80000
+
+    # Rays in one full pass of the scan pattern (every direction around the player). At a
+    # 10-chunk view distance, 2600 rays are about 5 degrees apart. While the player moves the
+    # pattern turns with them, and when they stop it is refined (see above), so the gaps fill
+    # either way - this mainly decides how quickly.
+    #   Lower (1500): cheaper passes; far terrain turns real a moment later while walking.
+    #   Higher (4000+): denser while walking, proportionally more CPU per pass.
+    #   Range 500-10000. To save CPU, a larger size usually helps more than fewer rays.
+    target-total-rays: 2600
+
+    # Most blocks one scan may send to one player: a bandwidth limit, not a CPU one. A size 8
+    # cell is 512 blocks, so 32768 is 64 cells - at worst roughly 100-200 KB at once, e.g.
+    # right after a teleport. Nearest cells go first; the rest follow over the next scans.
+    #   Lower (16384): gentler on slow connections; terrain after a teleport fills in over a
+    #   second or two.
+    #   Higher (65536): faster reveal after teleports, bigger bursts. Range 4096-262144.
+    max-revealed-blocks-per-scan: 32768
+
+  #  Entities: which ones a player is allowed to see, and how much CPU that may cost.
+  entities:
+    # How many sample points across an entity's body are tested: 4 means up to 4 x 4 = 16
+    # rays. A clearly visible entity costs a single ray; the other points are only used when
+    # its centre is blocked.
+    #   Lower (2): cheaper, but a mob half behind a corner may vanish too early.
+    #   Higher (6+): smoother edges, more CPU for every entity that is hidden. Range 1-9.
+    size: 4
+
+    # How often a player's entities are checked, in ticks. An entity is not checked again while
+    # neither it nor the player has moved.
+    #   Lower (1): entities appear the moment they come round a corner; twice the CPU.
+    #   Higher (4): less CPU, but they pop in up to 0.2 s later. Range 1-20.
+    scan-ticks: 2
+
+    # Only entities within this many blocks (a box around the player) are checked; farther
+    # ones are left to the server's normal tracking.
+    #   Lower: less CPU near big farms, but anything farther away is never hidden.
+    #   Higher: covers more. Keep it at least your entity-tracking-range (spigot.yml) - the
+    #   locator bar is protected beyond it anyway. Range 8-200.
     scan-radius-blocks: 128
-    # How many solid blocks may lie between the player's eye and an entity before it is hidden.
-    # 1 = one thin wall hides it. Higher = entities stay visible behind more cover. This also
-    # limits how deep terrain is revealed through walls. Range 1-8.
+
+    # How many solid blocks between a player's eye and an entity hide it. The same number
+    # decides how deep terrain turns real behind a wall.
+    #   1: a single block of wall hides it - strictest, and what most servers want.
+    #   Higher (2-3): entities stay visible behind thin cover and terrain shows a little deeper;
+    #   fewer pop-ins, weaker protection. Range 1-8.
     occlusion-blocks: 1
 
-# Mute a sound only when it is at least this far away and behind solid blocks. Range 1.0-128.0.
+    # A check that runs out of time keeps its list and carries on next tick from where it
+    # stopped, so nothing is skipped or misjudged - it just finishes a tick later.
+
+    # Time ONE player's entity check may take.
+    #   Lower (250): smoother ticks next to huge farms; entities there update a tick or two later.
+    #   Higher (1000): checks finish in one go even in crowded places. Range 100-10000.
+    max-scan-micros: 500
+
+    # Time ALL players' entity checks together may take per tick, per server thread - yes, the
+    # same shared limit as for terrain, so many players next to the same mob farm cannot take
+    # over the tick either.
+    #   Lower (2000): for busy servers or many large farms.
+    #   Higher (6000-8000): with a strong CPU or few players. Range 1000-40000.
+    max-scan-micros-per-tick: 4000
+
+#  Sounds, effects and the locator bar
+
+# A sound is muted only when it is at least this many blocks away AND behind solid blocks.
+# Closer sounds are always heard, as they would be in reality.
+#   Lower (16-24): stricter - footsteps and mob noises in nearby caves give less away.
+#   Higher (64+): only very distant sounds are ever muted. Range 1.0-128.0.
 far-sound-distance: 48.0
 
-# Important sounds that never muted.
+# Sounds that are never muted, matched as part of the sound name. Big events must stay
+# audible even through walls.
 important-sounds:
   - explode
   - explosion
@@ -131,7 +248,17 @@ important-sounds:
   - raid
   - bell
 
-# Cancel particles, block animations and minor sounds whose origin is hidden from the viewer.
-# Block updates and hidden block-entity data are always kept consistent and are not controlled
-# by this switch. Important sounds are always allowed.
+# Locator bar (1.21.6+). Near a player the server sends their exact block position, which a
+# modified client can read through any wall.
+#   true: the bar keeps working, but for every player the viewer cannot see right now it only
+#   gets the direction - like the vanilla bar for far players. The exact position is sent once
+#   that player is visible.
+#   false: the bar gets what vanilla sends (exact positions nearby).
+hide-locator-positions: true
+
+# Cancels particles, block-breaking animations and minor sounds whose origin the viewer cannot
+# see (hidden terrain or behind a wall). Block changes and hidden chests' data are always kept
+# hidden regardless of this switch, and important sounds are always played.
+#   true: a mob farm or a mining player behind a wall shows no particles.
+#   false: all effects are sent as usual (slightly less work on the network threads).
 hide-effects: true

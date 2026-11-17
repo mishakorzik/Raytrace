@@ -7,8 +7,7 @@ import org.bukkit.World;
 
 import java.util.Arrays;
 
-// Encodes a real chunk, masks it and decodes it with the server's own classes. Every block below
-// the ceiling must be fake, and every block above must be unchanged.
+// Encodes, masks and decodes a real chunk: below the ceiling all fake, above it unchanged.
 public final class ChunkMaskSelfTest {
 
     private ChunkMaskSelfTest() {}
@@ -98,9 +97,7 @@ public final class ChunkMaskSelfTest {
             if (changedAbove > 0) {
                 return new Result(false, changedAbove + " of " + realAbove + " blocks above the ceiling were changed");
             }
-            // The same snapshot, masked again with a region the viewer has already earned.
-            // Those blocks must come back exactly as they were: this is what stops a chunk that
-            // arrives after a reveal from re-faking the cells that reveal just opened.
+            // The same snapshot with an earned region: those blocks must come back unchanged.
             int earnedMinX = 4;
             int earnedMaxX = 11;
             int earnedMinZ = 4;
@@ -149,8 +146,7 @@ public final class ChunkMaskSelfTest {
             if (earnedKept == 0 || earnedLost > 0) {
                 return new Result(false, earnedLost + " of " + earnedKept + " blocks the viewer had already earned were re-faked by the chunk mask");
             }
-            // The soil-buffer path: blocks above the normal ceiling but below the hard cutoff
-            // are left real unless the sensitive-state predicate says they are an ore/container.
+            // Soil buffer: between the two cutoffs only ores and containers turn fake.
             int hardCeiling = Math.min(world.getMaxHeight(), ceiling + 16);
             int[] oreCeilings = new int[256];
             Arrays.fill(oreCeilings, hardCeiling);
@@ -198,8 +194,7 @@ public final class ChunkMaskSelfTest {
     }
     // The server's own chunk object behind a Bukkit chunk.
     private static Object nmsChunk(Chunk chunk) throws Exception {
-        // CraftChunk keeps the server's level and the chunk coordinates, not the chunk itself,
-        // so the chunk is asked for through the server's own accessor.
+        // CraftChunk keeps only the level and coordinates, so the chunk comes from the server's accessor.
         Class<?> statusClass = Class.forName("net.minecraft.world.level.chunk.status.ChunkStatus");
         Object full = statusClass.getField("FULL").get(null);
         Object result = chunk.getClass().getMethod("getHandle", statusClass).invoke(chunk, full);
@@ -219,7 +214,7 @@ public final class ChunkMaskSelfTest {
     private static Object stoneState() throws Exception {
         return blockState("STONE");
     }
-    // The server's own block state for a {@code Blocks} field.
+    // The server's own block state for a Blocks field.
     private static Object blockState(String field) throws Exception {
         Class<?> blocks = Class.forName("net.minecraft.world.level.block.Blocks");
         Object block = blocks.getField(field).get(null);

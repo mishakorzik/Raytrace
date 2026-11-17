@@ -2,12 +2,7 @@ package com.heonezen.raytrace.util;
 
 import java.util.Arrays;
 
-/**
- * Open-addressing {@code long -> int} map for the ray scans. It is single-threaded by design
- * (one instance per player, used only on that player's region thread) and never allocates per
- * entry, unlike a {@code HashMap<CellPos, Integer>} which allocated a key and a boxed value for
- * every cell a ray touched.
- */
+// Open-addressing long -> int map for the ray scans.
 public final class LongIntMap {
     // Receives every entry of the map.
     @FunctionalInterface
@@ -37,6 +32,22 @@ public final class LongIntMap {
     }
     public boolean isEmpty() {
         return size == 0;
+    }
+
+    public int size() {
+        return size;
+    }
+
+    // The value stored for this key, or missing.
+    public int get(long key, int missing) {
+        int index = hash(key) & mask;
+        while (used[index]) {
+            if (keys[index] == key) {
+                return values[index];
+            }
+            index = (index + 1) & mask;
+        }
+        return missing;
     }
     // Forgets every entry but keeps the allocated tables for reuse.
     public void clear() {
@@ -70,7 +81,7 @@ public final class LongIntMap {
             grow();
         }
     }
-    // Stores {@code value} unless the key already holds a smaller or equal one.
+    // Stores value unless the key already holds a smaller or equal one.
     public void putMin(long key, int value) {
         int index = hash(key) & mask;
         while (used[index]) {

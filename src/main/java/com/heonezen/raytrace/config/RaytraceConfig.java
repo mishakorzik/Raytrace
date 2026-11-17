@@ -28,7 +28,8 @@ public final class RaytraceConfig {
     private static final int MAX_ENTITY_GRID_SIZE = 9;
     private static final int DEFAULT_BLOCK_GRID_SIZE = 8;
     private static final int DEFAULT_ENTITY_GRID_SIZE = 4;
-    private static final int DEFAULT_SURFACE_BUFFER = 8;
+    // Defaults must match the bundled config.yml: a missing key falls back to these, not to the jar's file.
+    private static final int DEFAULT_SURFACE_BUFFER = 4;
 
     private static final List<String> DEFAULT_IMPORTANT_SOUNDS = List.of("explode", "explosion", "ender_dragon", "end_crystal", "wither", "end_portal", "beacon", "raid", "bell");
 
@@ -43,17 +44,24 @@ public final class RaytraceConfig {
     private volatile boolean hideEffects = true;
     private volatile double farSoundDistance = 48.0;
     private volatile String[] importantSounds = DEFAULT_IMPORTANT_SOUNDS.toArray(new String[0]);
-    private volatile GridSettings grids = new GridSettings(new GridSettings.BlockGrid(8, 2, 2L, 1.2, 6.0, 4.0, 80_000, 2_600, 40_000, 1_000L), new GridSettings.EntityGrid(4, 2L, 128.0, 1));
+    // Scan limits; config.yml explains each of them.
+    private static final int DEFAULT_MAX_STEPS = 80_000;
+    private static final int DEFAULT_TARGET_RAYS = 2_600;
+    private static final int DEFAULT_MAX_REVEALED = 32_768;
+    private static final long DEFAULT_SCAN_MICROS = 1_000L;
+    private static final long DEFAULT_SCAN_MICROS_PER_TICK = 6_000L;
+    private static final long DEFAULT_ENTITY_SCAN_MICROS = 500L;
+    private static final long DEFAULT_ENTITY_SCAN_MICROS_PER_TICK = 4_000L;
+
+    private volatile boolean hideLocatorPositions = true;
+    private volatile GridSettings grids = new GridSettings(new GridSettings.BlockGrid(8, 1, 2L, 1.2, 6.0, 4.0, DEFAULT_MAX_STEPS, DEFAULT_TARGET_RAYS, DEFAULT_MAX_REVEALED, DEFAULT_SCAN_MICROS, DEFAULT_SCAN_MICROS_PER_TICK), new GridSettings.EntityGrid(4, 2L, 128.0, 1, DEFAULT_ENTITY_SCAN_MICROS, DEFAULT_ENTITY_SCAN_MICROS_PER_TICK));
 
     public RaytraceConfig(Plugin plugin) {
         this.plugin = plugin;
         reload();
     }
 
-    /**
-     * Builds the settings from an already loaded configuration, without touching the plugin's
-     * data folder. The diagnostics use this so they can run before the plugin has one.
-     */
+    // Builds the settings from a loaded configuration, without the plugin's data folder (self-checks).
     public RaytraceConfig(Plugin plugin, FileConfiguration config) {
         this.plugin = plugin;
         apply(config);
@@ -63,9 +71,7 @@ public final class RaytraceConfig {
         plugin.saveDefaultConfig();
         FileConfiguration config;
         try {
-            // The file is parsed on its own first. Bukkit swallows a YAML error and hands back an
-            // empty config merged with the jar defaults, which would silently switch the
-            // protection off in every world.
+            // Parse the file on its own first: Bukkit hides a YAML error behind an empty config.
             new YamlConfiguration().load(new File(plugin.getDataFolder(), "config.yml"));
             plugin.reloadConfig();
             config = plugin.getConfig();
@@ -86,8 +92,7 @@ public final class RaytraceConfig {
         return apply(config);
     }
 
-    // Parses everything first, so a malformed reload never leaves the plugin with a half-updated
-    // mix of old and new settings.
+    // Parses everything first, so a malformed reload never leaves the plugin with a half-updated mix of old and new settings.
     private boolean apply(FileConfiguration config) {
         // contains(path, true) ignores the jar defaults, so only a section the file really has counts.
         if (!worlds.isEmpty() && !config.contains("worlds", true)) {
@@ -96,13 +101,15 @@ public final class RaytraceConfig {
         }
 
         Map<String, WorldSettings> parsedWorlds = parseWorlds(config);
-        boolean parsedHideEffects = config.getBoolean("hide-effects", true);
-        double parsedFarSoundDistance = clamp(config.getDouble("far-sound-distance", 48.0), 1.0, 128.0);
+        boolean parsedHideEffects = booleanSetting(config, "", "hide-effects", true);
+        boolean parsedHideLocator = booleanSetting(config, "", "hide-locator-positions", true);
+        double parsedFarSoundDistance = doubleSetting(config, "", "far-sound-distance", 48.0, 1.0, 128.0);
         String[] parsedImportantSounds = parseImportantSounds(config);
         GridSettings parsedGrids = parseGrids(config);
 
         this.worlds = parsedWorlds;
         this.hideEffects = parsedHideEffects;
+        this.hideLocatorPositions = parsedHideLocator;
         this.farSoundDistance = parsedFarSoundDistance;
         this.importantSounds = parsedImportantSounds;
         this.grids = parsedGrids;
@@ -141,29 +148,35 @@ public final class RaytraceConfig {
 
     private Map<String, WorldSettings> parseWorlds(FileConfiguration config) {
         Map<String, WorldSettings> result = new HashMap<>();
-        ConfigurationSection worldsSection = config.getConfigurationSection("worlds");
-        if (worldsSection == null) {
-            plugin.getLogger().warning("config.yml has no 'worlds' section; Raytrace is disabled everywhere.");
+        // Checked on the file itself: Bukkit returns an empty default section when the file has none.
+        ConfigurationSection worldsSection = config.contains("worlds", true) ? config.getConfigurationSection("worlds") : null;
+        if (worldsSection == null || worldsSection.getKeys(false).isEmpty()) {
+            plugin.getLogger().warning("config.yml has no worlds listed under 'worlds'; Raytrace protects no world.");
             return result;
         }
 
         for (String worldName : worldsSection.getKeys(false)) {
             ConfigurationSection section = worldsSection.getConfigurationSection(worldName);
             if (section == null) {
+                plugin.getLogger().warning("worlds." + worldName + " is not a section of options; that world is not protected.");
                 continue;
             }
-            boolean enabled = section.getBoolean("enabled", false);
+            String path = "worlds." + worldName + ".";
+            // A world that is listed is meant to be protected: a missing 'enabled' means on.
+            boolean enabled = booleanSetting(section, path, "enabled", true);
             List<LayerBand> bands = parseLayers(section.getMapList("layers"), worldName);
-            boolean hideMobs = section.getBoolean("hide-mobs", true);
-            boolean hidePlayers = section.getBoolean("hide-players", true);
-            boolean hideVehicles = section.getBoolean("hide-vehicles", true);
-            boolean hideDecorations = section.getBoolean("hide-decorations", true);
-            boolean hideItems = section.getBoolean("hide-items", true);
-            int surfaceBuffer = section.getInt("surface-buffer", DEFAULT_SURFACE_BUFFER);
-            if (enabled && bands.isEmpty() && !hideMobs && !hidePlayers && !hideVehicles && !hideDecorations && !hideItems) {
+            boolean hideMobs = booleanSetting(section, path, "hide-mobs", true);
+            boolean hidePlayers = booleanSetting(section, path, "hide-players", true);
+            boolean hideVehicles = booleanSetting(section, path, "hide-vehicles", true);
+            boolean hideDecorations = booleanSetting(section, path, "hide-decorations", true);
+            boolean hideItems = booleanSetting(section, path, "hide-items", true);
+            boolean hideProjectiles = booleanSetting(section, path, "hide-projectiles", true);
+            boolean hideMisc = booleanSetting(section, path, "hide-misc", true);
+            int surfaceBuffer = intSetting(section, path, "surface-buffer", DEFAULT_SURFACE_BUFFER, -1, 64);
+            if (enabled && bands.isEmpty() && !hideMobs && !hidePlayers && !hideVehicles && !hideDecorations && !hideItems && !hideProjectiles && !hideMisc) {
                 plugin.getLogger().warning("World '" + worldName + "' is enabled but protects nothing.");
             }
-            result.put(worldName, new WorldSettings(enabled, bands, hideMobs, hidePlayers, hideVehicles, hideDecorations, hideItems, surfaceBuffer));
+            result.put(worldName, new WorldSettings(enabled, bands, hideMobs, hidePlayers, hideVehicles, hideDecorations, hideItems, hideProjectiles, hideMisc, surfaceBuffer));
         }
         return result;
     }
@@ -192,64 +205,107 @@ public final class RaytraceConfig {
         ConfigurationSection blocks = gridsSection == null ? null : gridsSection.getConfigurationSection("blocks");
         ConfigurationSection entities = gridsSection == null ? null : gridsSection.getConfigurationSection("entities");
 
-        int blockSize = clamp(intValue(blocks, "size", DEFAULT_BLOCK_GRID_SIZE), MIN_GRID_SIZE, MAX_BLOCK_GRID_SIZE);
-        int entitySize = clamp(intValue(entities, "size", DEFAULT_ENTITY_GRID_SIZE), MIN_GRID_SIZE, MAX_ENTITY_GRID_SIZE);
-        long blockScanTicks = clamp(longValue(blocks, "scan-ticks", 2L), 1L, 20L);
-        return new GridSettings(
-                new GridSettings.BlockGrid(
-                        blockSize,
-                        clamp(intValue(blocks, "occlusion-grace-blocks", 2), 1, 8),
-                        blockScanTicks,
-                        clamp(doubleValue(blocks, "move-threshold-blocks", 1.2), 0.1, 16.0),
-                        clamp(doubleValue(blocks, "yaw-threshold-degrees", 6.0), 0.1, 120.0),
-                        clamp(doubleValue(blocks, "pitch-threshold-degrees", 4.0), 0.1, 120.0),
-                        clamp(intValue(blocks, "max-steps-per-scan", 80000), 1000, 1000000),
-                        clamp(intValue(blocks, "target-total-rays", 2600), 64, 10000),
-                        clamp(intValue(blocks, "max-revealed-blocks-per-scan", 40000), 256, 1000000),
-                        clamp(longValue(blocks, "max-scan-micros", 1000L), 100L, 20000L)
-                ),
-                new GridSettings.EntityGrid(
-                        entitySize,
-                        clamp(longValue(entities, "scan-ticks", 2L), 1L, 20L),
-                        clamp(doubleValue(entities, "scan-radius-blocks", 128.0), 8.0, 200.0),
-                        // Entity rays get one grace block by default; terrain reveal has its own
-                        // occlusion-grace-blocks setting.
-                        clamp(intValue(entities, "occlusion-blocks", 1), 1, 8)
-                )
-        );
+        String b = "grids.blocks.";
+        String e = "grids.entities.";
+        int blockSize = intSetting(blocks, b, "size", DEFAULT_BLOCK_GRID_SIZE, MIN_GRID_SIZE, MAX_BLOCK_GRID_SIZE);
+        // Walking further than entities.occlusion-blocks reveals nothing more.
+        int grace = intSetting(blocks, b, "occlusion-grace-blocks", 1, 1, 8);
+        int blockScanTicks = intSetting(blocks, b, "scan-ticks", 2, 1, 20);
+        double moveThreshold = doubleSetting(blocks, b, "move-threshold-blocks", 1.2, 0.1, 16.0);
+        double yawThreshold = doubleSetting(blocks, b, "yaw-threshold-degrees", 6.0, 0.1, 120.0);
+        double pitchThreshold = doubleSetting(blocks, b, "pitch-threshold-degrees", 4.0, 0.1, 120.0);
+        int maxSteps = intSetting(blocks, b, "max-steps-per-scan", DEFAULT_MAX_STEPS, 10_000, 1_000_000);
+        int targetRays = intSetting(blocks, b, "target-total-rays", DEFAULT_TARGET_RAYS, 500, 10_000);
+        int maxRevealed = intSetting(blocks, b, "max-revealed-blocks-per-scan", DEFAULT_MAX_REVEALED, 4_096, 262_144);
+        int scanMicros = intSetting(blocks, b, "max-scan-micros", (int) DEFAULT_SCAN_MICROS, 200, 10_000);
+        int scanMicrosPerTick = intSetting(blocks, b, "max-scan-micros-per-tick", (int) DEFAULT_SCAN_MICROS_PER_TICK, 1_000, 40_000);
+
+        int entitySize = intSetting(entities, e, "size", DEFAULT_ENTITY_GRID_SIZE, MIN_GRID_SIZE, MAX_ENTITY_GRID_SIZE);
+        int entityScanTicks = intSetting(entities, e, "scan-ticks", 2, 1, 20);
+        double scanRadius = doubleSetting(entities, e, "scan-radius-blocks", 128.0, 8.0, 200.0);
+        int occlusion = intSetting(entities, e, "occlusion-blocks", 1, 1, 8);
+        int entityMicros = intSetting(entities, e, "max-scan-micros", (int) DEFAULT_ENTITY_SCAN_MICROS, 100, 10_000);
+        int entityMicrosPerTick = intSetting(entities, e, "max-scan-micros-per-tick", (int) DEFAULT_ENTITY_SCAN_MICROS_PER_TICK, 1_000, 40_000);
+
+        GridSettings.BlockGrid blockGrid = new GridSettings.BlockGrid(blockSize, grace, blockScanTicks, moveThreshold, yawThreshold, pitchThreshold, maxSteps, targetRays, maxRevealed, scanMicros, scanMicrosPerTick);
+        GridSettings.EntityGrid entityGrid = new GridSettings.EntityGrid(entitySize, entityScanTicks, scanRadius, occlusion, entityMicros, entityMicrosPerTick);
+        return new GridSettings(blockGrid, entityGrid);
     }
 
-    private static int intValue(ConfigurationSection section, String key, int defaultValue) {
-        if (section != null && section.contains(key)) {
-            return section.getInt(key, defaultValue);
+    // The file's own value of a key (never the jar's default), or null when it is missing.
+    private static Object rawValue(ConfigurationSection section, String key) {
+        return section == null ? null : section.get(key, null);
+    }
+
+    // A whole-number setting. A wrong or out-of-range value is logged, never replaced silently.
+    private int intSetting(ConfigurationSection section, String path, String key, int defaultValue, int min, int max) {
+        Object raw = rawValue(section, key);
+        if (raw == null) {
+            return defaultValue;
         }
-        return defaultValue;
-    }
-
-    private static long longValue(ConfigurationSection section, String key, long defaultValue) {
-        if (section != null && section.contains(key)) {
-            return section.getLong(key, defaultValue);
+        double value;
+        if (raw instanceof Number number) {
+            value = number.doubleValue();
+        } else {
+            try {
+                value = Double.parseDouble(raw.toString().trim());
+            } catch (NumberFormatException exception) {
+                plugin.getLogger().warning(path + key + ": '" + raw + "' is not a number; using " + defaultValue + ".");
+                return defaultValue;
+            }
         }
-        return defaultValue;
-    }
-
-    private static double doubleValue(ConfigurationSection section, String key, double defaultValue) {
-        if (section != null && section.contains(key)) {
-            return section.getDouble(key, defaultValue);
+        if (value != Math.rint(value)) {
+            plugin.getLogger().warning(path + key + ": " + raw + " must be a whole number; using " + Math.round(value) + ".");
         }
+        long rounded = Math.round(value);
+        if (rounded < min || rounded > max) {
+            long clamped = Math.max(min, Math.min(max, rounded));
+            plugin.getLogger().warning(path + key + ": " + raw + " is outside " + min + " to " + max + "; using " + clamped + ".");
+            return (int) clamped;
+        }
+        return (int) rounded;
+    }
+
+    // A decimal setting, reported like intSetting.
+    private double doubleSetting(ConfigurationSection section, String path, String key, double defaultValue, double min, double max) {
+        Object raw = rawValue(section, key);
+        if (raw == null) {
+            return defaultValue;
+        }
+        double value;
+        if (raw instanceof Number number) {
+            value = number.doubleValue();
+        } else {
+            try {
+                value = Double.parseDouble(raw.toString().trim());
+            } catch (NumberFormatException exception) {
+                plugin.getLogger().warning(path + key + ": '" + raw + "' is not a number; using " + defaultValue + ".");
+                return defaultValue;
+            }
+        }
+        if (Double.isNaN(value) || value < min || value > max) {
+            double clamped = Double.isNaN(value) ? defaultValue : Math.max(min, Math.min(max, value));
+            plugin.getLogger().warning(path + key + ": " + raw + " is outside " + min + " to " + max + "; using " + clamped + ".");
+            return clamped;
+        }
+        return value;
+    }
+
+    // A true/false setting, reported like intSetting.
+    private boolean booleanSetting(ConfigurationSection section, String path, String key, boolean defaultValue) {
+        Object raw = rawValue(section, key);
+        if (raw == null) {
+            return defaultValue;
+        }
+        if (raw instanceof Boolean value) {
+            return value;
+        }
+        String text = raw.toString().trim();
+        if (text.equalsIgnoreCase("true") || text.equalsIgnoreCase("false")) {
+            return Boolean.parseBoolean(text);
+        }
+        plugin.getLogger().warning(path + key + ": '" + raw + "' is not true or false; using " + defaultValue + ".");
         return defaultValue;
-    }
-
-    private static int clamp(int value, int min, int max) {
-        return Math.max(min, Math.min(max, value));
-    }
-
-    private static double clamp(double value, double min, double max) {
-        return Math.max(min, Math.min(max, value));
-    }
-
-    private static long clamp(long value, long min, long max) {
-        return Math.max(min, Math.min(max, value));
     }
 
     public WorldSettings worldSettings(World world) {
@@ -258,6 +314,11 @@ public final class RaytraceConfig {
 
     public boolean hideEffects() {
         return hideEffects;
+    }
+
+    // Whether the locator bar may only show a direction for entities the viewer cannot see.
+    public boolean hideLocatorPositions() {
+        return hideLocatorPositions;
     }
 
     public double farSoundDistance() {

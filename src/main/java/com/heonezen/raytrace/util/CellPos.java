@@ -1,7 +1,6 @@
 package com.heonezen.raytrace.util;
 
-// A grid cell used as the reveal granularity. The size is stored per instance, so cells from
-// before and after a config reload never compare equal.
+// A grid cell used as the reveal granularity.
 public record CellPos(int cellX, int cellY, int cellZ, int size) {
     public static CellPos of(int blockX, int blockY, int blockZ, int size) {
         return new CellPos(Math.floorDiv(blockX, size), Math.floorDiv(blockY, size), Math.floorDiv(blockZ, size), size);
@@ -21,8 +20,7 @@ public record CellPos(int cellX, int cellY, int cellZ, int size) {
     public int chunkZ() {
         return Math.floorDiv(minBlockZ(), 16);
     }
-    // Packs cell coordinates into one long (26 bits X, 26 bits Z, 12 bits Y), so the per-scan
-    // maps need no key objects. Y is offset so negative world heights stay positive.
+    // Packs cell coordinates into one long (26 bits X, 26 bits Z, 12 bits Y), so the per-scan maps need no key objects.
     public static long pack(int cellX, int cellY, int cellZ) {
         return ((long) (cellX & 0x3FFFFFF) << 38) | ((long) (cellZ & 0x3FFFFFF) << 12) | ((cellY + 2048) & 0xFFFL);
     }

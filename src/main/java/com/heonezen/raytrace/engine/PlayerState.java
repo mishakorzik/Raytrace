@@ -18,9 +18,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
-// Per-player state. The Netty threads read only the concurrent members (earned cells, hidden
-// entity ids, the cached eye, world and bypass flag); everything marked "tick thread" is touched
-// only by the player's own region thread.
+// Per-player state. Netty threads touch only the concurrent fields; everything else is tick-thread only.
 final class PlayerState {
 
     // An entity withheld from this client: it has no spawn on the client right now.
@@ -49,13 +47,9 @@ final class PlayerState {
         long tick;
         int scanId;
         boolean hidden;
-        // Whether the last verdict hides the entity because it is inside hidden terrain
-        // (underground) rather than merely occluded by a wall. Hidden-terrain hides skip the
-        // grace delay: such an entity was never legitimately seen.
+        // Hidden because it is in hidden terrain (underground), not just behind a wall: no grace delay.
         boolean hiddenTerrain;
-        // Tick of the first scan in which this (still visible) entity was found occluded, or -1
-        // when nothing is pending. The entity is hidden only after ENTITY_HIDE_DELAY_TICKS of
-        // continuous occlusion; becoming visible again in between cancels the pending hide.
+        // Tick the still-visible entity was first found occluded, or -1. It is hidden after ENTITY_HIDE_DELAY_TICKS.
         long hiddenSinceTick = -1L;
     }
 
@@ -70,6 +64,15 @@ final class PlayerState {
     private final ConcurrentHashMap<Integer, Object> knownSpawns = new ConcurrentHashMap<>();
     // Entities this plugin just introduced itself; their spawn must not be re-judged at once.
     private final ConcurrentHashMap<Integer, Integer> revealedAt = new ConcurrentHashMap<>();
+    // Waypoints this client holds as a direction only, because the exact position was withheld.
+    private final Set<UUID> convertedWaypoints = ConcurrentHashMap.newKeySet();
+    // Entities the client currently has, both ways round (any thread).
+    private final ConcurrentHashMap<UUID, Integer> clientEntities = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, UUID> clientEntityUuids = new ConcurrentHashMap<>();
+    // A pass over nearby entities that a time limit cut short (tick thread only).
+    private List<org.bukkit.entity.Entity> entityPass;
+    private int entityPassIndex;
+    private int entityPassId;
 
     private volatile Object connection;
     private volatile Channel channel;
@@ -81,6 +84,7 @@ final class PlayerState {
     private volatile boolean eyeCached;
     // Entity id of what the player is riding, or -1. Read by the spawn check on Netty threads.
     private volatile int vehicleId = -1;
+    private volatile int viewerId = -1;
     private volatile double eyeX;
     private volatile double eyeY;
     private volatile double eyeZ;
@@ -111,6 +115,7 @@ final class PlayerState {
     private boolean pendingDeferredReveals;
     private int rayCursor;
     private int rayProgress;
+    private int refinePass;
     private List<CellPos> deferredCells = new ArrayList<>();
 
     private final Map<Integer, EntityCheck> entityChecks = new HashMap<>();
@@ -155,14 +160,12 @@ final class PlayerState {
 
     void markCellVisible(CellPos cell) {
         if (visibleCells.add(cell)) {
-            columns.computeIfAbsent(columnKey(cell.chunkX(), cell.chunkZ()),
-                    ignored -> ConcurrentHashMap.newKeySet()).add(cell);
+            columns.computeIfAbsent(columnKey(cell.chunkX(), cell.chunkZ()), ignored -> ConcurrentHashMap.newKeySet()).add(cell);
             cellVersion.incrementAndGet();
         }
     }
 
-    // Whether any earned cell can touch this chunk. A cell is at most 16 blocks wide, so it
-    // reaches into a chunk from the column of its minimum corner or the one before it.
+    // Whether any earned cell can touch this chunk.
     boolean hasVisibleCellsInChunk(int chunkX, int chunkZ) {
         return columnHasCells(chunkX, chunkZ) || columnHasCells(chunkX - 1, chunkZ) || columnHasCells(chunkX, chunkZ - 1) || columnHasCells(chunkX - 1, chunkZ - 1);
     }
@@ -185,9 +188,7 @@ final class PlayerState {
         }
     }
 
-    // Forgets cells outside the radius and returns only the first ring for re-masking; cells
-    // further out are already unloaded by the client. Works on whole columns, so the cost is the
-    // number of columns, not the number of earned cells.
+    // Forgets cells outside the radius; returns the first ring for re-masking (the client unloaded the rest).
     Set<CellPos> forgetOutside(int centerChunkX, int centerChunkZ, int radiusChunks) {
         Set<CellPos> forgotten = null;
         boolean changed = false;
@@ -240,6 +241,8 @@ final class PlayerState {
         lastScanTick = Long.MIN_VALUE;
         lastScanWorld = null;
         pendingDeferredReveals = false;
+        refinePass = 0;
+        resetFrontier();
         deferredCells = new ArrayList<>();
         return forgotten;
     }
@@ -259,6 +262,8 @@ final class PlayerState {
         pendingDeferredReveals = false;
         rayCursor = 0;
         rayProgress = 0;
+        refinePass = 0;
+        resetFrontier();
         deferredCells = new ArrayList<>();
         focusValid = false;
         bubbleValid = false;
@@ -273,29 +278,36 @@ final class PlayerState {
         return tickCounter;
     }
 
-    // Whether a terrain scan is due. A scan that ran out of budget keeps the next one coming
-    // even when the player stands still, otherwise cells deferred for lack of budget would wait
-    // for the player to move.
-    boolean shouldRefreshScan(String worldName, double x, double y, double z, float yaw, float pitch,
-                              GridSettings.BlockGrid settings) {
+    // Whether a terrain scan is due. An idle player gets refinePasses extra passes, shifted between the earlier rays.
+    boolean shouldRefreshScan(String worldName, double x, double y, double z, float yaw, float pitch, GridSettings.BlockGrid settings, int refinePasses) {
         long last = lastScanTick;
         if (last != Long.MIN_VALUE && tickCounter - last < settings.scanTicks()) {
             return false;
         }
         boolean sameWorld = worldName.equals(lastScanWorld);
-        if (sameWorld && !pendingDeferredReveals) {
+        boolean still = false;
+        if (sameWorld) {
             double dx = x - lastScanX;
             double dy = y - lastScanY;
             double dz = z - lastScanZ;
             double moveThresholdSq = settings.moveThresholdBlocks() * settings.moveThresholdBlocks();
             boolean barelyMoved = dx * dx + dy * dy + dz * dz < moveThresholdSq;
-            boolean barelyTurned = yawDelta(yaw, lastScanYaw) < settings.yawThresholdDegrees()
-                    && Math.abs(pitch - lastScanPitch) < settings.pitchThresholdDegrees();
-            if (barelyMoved && barelyTurned) {
+            boolean barelyTurned = yawDelta(yaw, lastScanYaw) < settings.yawThresholdDegrees() && Math.abs(pitch - lastScanPitch) < settings.pitchThresholdDegrees();
+            still = barelyMoved && barelyTurned;
+        }
+        if (!still) {
+            // Real movement: the next idle period refines from the start again.
+            refinePass = 0;
+            resetFrontier();
+        }
+        if (still && !pendingDeferredReveals) {
+            if (refinePass >= refinePasses) {
                 return false;
             }
-        }
-        if (!pendingDeferredReveals || !sameWorld) {
+            // The previous pass is complete and nothing moved: run a shifted pass.
+            refinePass++;
+            rayProgress = 0;
+        } else if (!pendingDeferredReveals || !sameWorld) {
             // A scan started by movement begins a new pass over the ray pattern.
             rayProgress = 0;
         }
@@ -306,6 +318,100 @@ final class PlayerState {
         lastScanYaw = yaw;
         lastScanPitch = pitch;
         lastScanTick = tickCounter;
+        return true;
+    }
+
+    // The idle pass: 0 is the plain pattern, 1 and up the shifted refinement passes.
+    int refinePass() {
+        return refinePass;
+    }
+
+    // Lets an idle player's refinement passes run again, e.g. after a block was broken.
+    void restartRefinement() {
+        refinePass = 0;
+        resetFrontier();
+    }
+
+    // Frontier growth (tick thread only): far cells a ray reached, whose neighbours are checked with rays aimed straight at them.
+    private static final int FRONTIER_MAX_CELLS = 65_536;
+
+    // A cell waiting for its neighbours to be tested; the lowest priority (nearest the crosshair) goes first.
+    private record FrontierCell(long key, double priority) {}
+
+    private final java.util.PriorityQueue<FrontierCell> frontier = new java.util.PriorityQueue<>(java.util.Comparator.comparingDouble(FrontierCell::priority));
+    private final LongIntMap frontierSeen = new LongIntMap(256);
+    // The targeted-ray budget of this idle period; -1 until the engine sets it.
+    private int frontierBudget = -1;
+    private int frontierRaysLeft = -1;
+
+    private void resetFrontier() {
+        frontier.clear();
+        frontierSeen.clear();
+        frontierBudget = -1;
+        frontierRaysLeft = -1;
+    }
+
+    // Sets the targeted-ray budget of this idle period, once.
+    void ensureFrontierBudget(int budget) {
+        if (frontierBudget < 0) {
+            frontierBudget = budget;
+            frontierRaysLeft = budget;
+        }
+    }
+
+    // Marks a cell as considered in this idle period; false if it already was (or the period has looked at as many cells as it may).
+    boolean markFrontierSeen(long cellKey) {
+        if (frontierSeen.size() >= FRONTIER_MAX_CELLS || frontierSeen.get(cellKey, -1) >= 0) {
+            return false;
+        }
+        frontierSeen.put(cellKey, 0);
+        return true;
+    }
+
+    // Undoes markFrontierSeen for a cell whose test was cut short, so it is tested again.
+    void forgetFrontierSeen(long cellKey) {
+        frontierSeen.put(cellKey, -1);
+    }
+
+    // Starts the ray pattern over from the current cursor.
+    void restartPass() {
+        rayProgress = 0;
+    }
+
+    // Adds a reached cell whose neighbours still have to be checked.
+    void offerFrontierSeed(long cellKey, double priority) {
+        if (markFrontierSeen(cellKey)) {
+            frontier.add(new FrontierCell(cellKey, priority));
+        }
+    }
+
+    // Adds a cell that was just reached (already marked as seen).
+    void enqueueFrontier(long cellKey, double priority) {
+        frontier.add(new FrontierCell(cellKey, priority));
+    }
+
+    boolean hasFrontier() {
+        return !frontier.isEmpty() && frontierRaysLeft != 0;
+    }
+
+    // Takes the most important waiting cell. A cell that could not be finished goes back with enqueueFrontier.
+    long pollFrontier() {
+        return frontier.poll().key();
+    }
+
+    // How many targeted rays this idle period has used (self-check).
+    int frontierRaysUsed() {
+        return frontierBudget < 0 ? 0 : frontierBudget - frontierRaysLeft;
+    }
+
+    // Takes one targeted ray from the idle period's budget; false when it is used up.
+    boolean takeFrontierRay() {
+        if (frontierRaysLeft == 0) {
+            return false;
+        }
+        if (frontierRaysLeft > 0) {
+            frontierRaysLeft--;
+        }
         return true;
     }
 
@@ -341,15 +447,13 @@ final class PlayerState {
         deferredCells = cells;
     }
 
-    // Whether the cheap every-tick look-direction pass is worth running: it is skipped while the
-    // player neither moves nor turns.
+    // Whether the cheap every-tick look-direction pass is worth running: it is skipped while the player neither moves nor turns.
     boolean shouldRunFocus(double x, double y, double z, float yaw, float pitch) {
         if (focusValid) {
             double dx = x - focusX;
             double dy = y - focusY;
             double dz = z - focusZ;
-            if (dx * dx + dy * dy + dz * dz < 0.0225 && yawDelta(yaw, focusYaw) < 1.5F
-                    && Math.abs(pitch - focusPitch) < 1.0F) {
+            if (dx * dx + dy * dy + dz * dz < 0.0225 && yawDelta(yaw, focusYaw) < 1.5F && Math.abs(pitch - focusPitch) < 1.0F) {
                 return false;
             }
         }
@@ -381,8 +485,7 @@ final class PlayerState {
         lastScanTick = Long.MIN_VALUE;
     }
 
-    // Whether the hidden-entity scan is due. The {@code Long.MIN_VALUE} sentinel is checked
-    // explicitly because subtracting it would overflow.
+    // Whether the hidden-entity scan is due.
     boolean shouldRefreshEntityScan(long intervalTicks) {
         long last = lastEntityScanTick;
         if (last != Long.MIN_VALUE && tickCounter - last < intervalTicks) {
@@ -436,6 +539,15 @@ final class PlayerState {
         return vehicleId;
     }
 
+    // The viewer's own entity id, or -1 before the first tick.
+    int viewerId() {
+        return viewerId;
+    }
+
+    void setViewerId(int entityId) {
+        viewerId = entityId;
+    }
+
     void setVehicleId(int entityId) {
         vehicleId = entityId;
     }
@@ -461,10 +573,6 @@ final class PlayerState {
         return !hiddenIds.isEmpty();
     }
 
-    HiddenEntity hiddenEntity(int entityId) {
-        return hiddenEntities.get(entityId);
-    }
-
     Collection<HiddenEntity> hiddenEntities() {
         return hiddenEntities.values();
     }
@@ -472,6 +580,8 @@ final class PlayerState {
     // Starts withholding an entity.
     HiddenEntity hideEntity(int entityId, UUID entityUuid, Object spawnPacket) {
         HiddenEntity entry = new HiddenEntity(entityId, entityUuid, spawnPacket);
+        // Either the client never got it, or it is being taken away right now.
+        noteClientRemove(entityId);
         hiddenEntities.put(entityId, entry);
         hiddenIds.add(entityId);
         return entry;
@@ -482,6 +592,73 @@ final class PlayerState {
         // The id leaves the fast set first, so packets queued after this point are not dropped.
         hiddenIds.remove(entityId);
         return hiddenEntities.remove(entityId);
+    }
+
+    // Records that a spawn for this entity went out to the client. Safe on any thread.
+    void noteClientSpawn(int entityId, UUID uuid) {
+        UUID previous = clientEntityUuids.put(entityId, uuid);
+        if (previous != null && !previous.equals(uuid)) {
+            clientEntities.remove(previous, entityId);
+        }
+        clientEntities.put(uuid, entityId);
+    }
+
+    // Records that the client no longer has this entity. Safe on any thread.
+    void noteClientRemove(int entityId) {
+        UUID uuid = clientEntityUuids.remove(entityId);
+        if (uuid != null) {
+            clientEntities.remove(uuid, entityId);
+        }
+    }
+
+    // Whether the client currently has this entity, i.e. already knows where it is.
+    boolean isOnClient(UUID uuid) {
+        return clientEntities.containsKey(uuid);
+    }
+
+    // The client dropped every entity (respawn, world change, login).
+    void forgetClientEntities() {
+        clientEntityUuids.clear();
+        clientEntities.clear();
+    }
+
+    // The current pass over nearby entities, or null between passes (tick thread only).
+    List<org.bukkit.entity.Entity> entityPass() {
+        return entityPass;
+    }
+
+    int entityPassId() {
+        return entityPassId;
+    }
+
+    int entityPassIndex() {
+        return entityPassIndex;
+    }
+
+    void startEntityPass(List<org.bukkit.entity.Entity> entities, int passId) {
+        entityPass = entities;
+        entityPassId = passId;
+        entityPassIndex = 0;
+    }
+
+    void setEntityPassIndex(int index) {
+        entityPassIndex = index;
+    }
+
+    void finishEntityPass() {
+        entityPass = null;
+    }
+
+    boolean isWaypointConverted(UUID uuid) {
+        return convertedWaypoints.contains(uuid);
+    }
+
+    void markWaypointConverted(UUID uuid) {
+        convertedWaypoints.add(uuid);
+    }
+
+    void forgetConvertedWaypoint(UUID uuid) {
+        convertedWaypoints.remove(uuid);
     }
 
     boolean hasKnownSpawns() {
@@ -513,8 +690,11 @@ final class PlayerState {
         revealedAt.clear();
         hiddenEntities.clear();
         hiddenIds.clear();
+        convertedWaypoints.clear();
         knownSpawns.clear();
         entityChecks.clear();
+        forgetClientEntities();
+        entityPass = null;
     }
 
     int beginEntityScan() {
@@ -539,9 +719,7 @@ final class PlayerState {
         entityChecks.values().removeIf(check -> check.scanId != scanId);
     }
 
-    // Drops cached entity verdicts, so the next scan re-traces them. Called when the terrain
-    // changed (block broken/placed) while the player stands still: without it a fresh-looking
-    // verdict would be reused for up to 40 ticks even though a wall is gone.
+    // Drops cached entity verdicts, so the next scan re-traces them.
     void invalidateEntityChecks() {
         entityChecks.clear();
     }

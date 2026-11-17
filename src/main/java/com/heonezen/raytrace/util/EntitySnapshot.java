@@ -9,12 +9,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.UUID;
 
-/**
- * Immutable entity data for cross-region checks. The raw NMS handle is read without
- * {@code CraftEntity#getHandle()}, which is tick-thread guarded on Canvas. All server members
- * are bound once as method handles, so a snapshot costs a handful of direct calls instead of a
- * dozen reflective ones.
- */
+// Immutable entity data for cross-region checks.
 public record EntitySnapshot(UUID uuid, int entityId, double x, double y, double z, double width, double height, EntityKind kind, boolean valid) {
 
     private static final MethodType OBJ_TO_OBJ = MethodType.methodType(Object.class, Object.class);
@@ -91,7 +86,7 @@ public record EntitySnapshot(UUID uuid, int entityId, double x, double y, double
         }
     }
 
-    // Reads a snapshot, or returns {@code null} when the server classes do not match.
+    // Reads a snapshot, or returns null when the server classes do not match.
     public static EntitySnapshot read(Entity entity) {
         if (!AVAILABLE || entity == null) {
             return null;

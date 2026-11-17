@@ -17,16 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Netty packet layer. Server internals are accessed reflectively so the plugin stays a single
- * jar; a failed lookup disables only the affected feature. Handlers sit before the server's
- * encoder, which still produces the wire format.
- *
- * <p>Every reflective member is resolved once and cached, including the "no such member"
- * answer. The outgoing handler runs for every packet of every player, so an uncached
- * {@code getDeclaredField} (and the exception thrown when it misses) used to be a large share
- * of the plugin's CPU time.
- */
+// Netty packet layer. Server internals are reached reflectively and every lookup is cached.
 public final class NativeProtocol {
 
     private NativeProtocol() {}
@@ -50,9 +41,6 @@ public final class NativeProtocol {
         return new IllegalStateException(cause);
     }
 
-    private record MemberKey(Class<?> owner, String name) {
-    }
-
     private static final Field NO_FIELD;
 
     static {
@@ -73,15 +61,26 @@ public final class NativeProtocol {
         }
     }
 
-    private static final ConcurrentHashMap<MemberKey, Field> FIELDS = new ConcurrentHashMap<>();
-    private static final ConcurrentHashMap<MemberKey, Method> METHODS = new ConcurrentHashMap<>();
+    // Resolved members per class and name (NO_FIELD / NO_METHOD when missing); a lookup allocates nothing.
+    private static final ClassValue<ConcurrentHashMap<String, Field>> FIELDS = new ClassValue<>() {
+        @Override
+        protected ConcurrentHashMap<String, Field> computeValue(Class<?> type) {
+            return new ConcurrentHashMap<>();
+        }
+    };
+    private static final ClassValue<ConcurrentHashMap<String, Method>> METHODS = new ClassValue<>() {
+        @Override
+        protected ConcurrentHashMap<String, Method> computeValue(Class<?> type) {
+            return new ConcurrentHashMap<>();
+        }
+    };
 
     private static Field lookupField(Class<?> owner, String name) {
-        MemberKey key = new MemberKey(owner, name);
-        Field cached = FIELDS.get(key);
+        ConcurrentHashMap<String, Field> fields = FIELDS.get(owner);
+        Field cached = fields.get(name);
         if (cached == null) {
             cached = resolveField(owner, name);
-            FIELDS.put(key, cached);
+            fields.put(name, cached);
         }
         return cached;
     }
@@ -139,8 +138,8 @@ public final class NativeProtocol {
     }
 
     private static Method lookupZeroArgMethod(Class<?> owner, String name) {
-        MemberKey key = new MemberKey(owner, name);
-        Method cached = METHODS.get(key);
+        ConcurrentHashMap<String, Method> methods = METHODS.get(owner);
+        Method cached = methods.get(name);
         if (cached == null) {
             try {
                 cached = owner.getMethod(name);
@@ -148,7 +147,7 @@ public final class NativeProtocol {
             } catch (ReflectiveOperationException | RuntimeException exception) {
                 cached = NO_METHOD;
             }
-            METHODS.put(key, cached);
+            methods.put(name, cached);
         }
         return cached;
     }
@@ -181,12 +180,7 @@ public final class NativeProtocol {
         }
     }
 
-    /**
-     * Reads the first of several numeric accessors a class has, without throwing. Used for the
-     * per-packet coordinate reads, where most candidate names do not exist.
-     *
-     * @return the value, or null when none of the names resolves to a number
-     */
+    // Reads the first of several numeric accessors a class has, without throwing.
     public static Number readNumber(Object target, String... names) {
         Class<?> type = target.getClass();
         for (String name : names) {
@@ -239,19 +233,18 @@ public final class NativeProtocol {
     private static final Object NO_INT_FIELD = new Object();
     private static final ConcurrentHashMap<Class<?>, Object> INT_ID_FIELDS = new ConcurrentHashMap<>();
 
-    /**
-     * Reads the integer entity id of a packet. The accessor is resolved once per packet class.
-     *
-     * @return the id, or null if the packet has none of the given int fields
-     */
-    public static Integer readEntityId(Object packet, String... names) {
+    // Returned by readEntityId when a packet has no entity id.
+    public static final int NO_ENTITY_ID = Integer.MIN_VALUE;
+
+    // The entity id of a packet, or NO_ENTITY_ID; unboxed, since it runs for every entity packet.
+    public static int readEntityId(Object packet, String... names) {
         Class<?> type = packet.getClass();
         Object cached = INT_ID_FIELDS.get(type);
         if (cached == null) {
             cached = NO_INT_FIELD;
             for (String name : names) {
                 Field found = resolveField(type, name);
-                if (found != NO_FIELD && (found.getType() == int.class || found.getType() == Integer.class)) {
+                if (found != NO_FIELD && found.getType() == int.class) {
                     cached = found;
                     break;
                 }
@@ -259,12 +252,12 @@ public final class NativeProtocol {
             INT_ID_FIELDS.put(type, cached);
         }
         if (cached == NO_INT_FIELD) {
-            return null;
+            return NO_ENTITY_ID;
         }
         try {
             return ((Field) cached).getInt(packet);
         } catch (IllegalAccessException | RuntimeException exception) {
-            return null;
+            return NO_ENTITY_ID;
         }
     }
 
@@ -286,8 +279,7 @@ public final class NativeProtocol {
         if (channel == null) {
             return;
         }
-        // Replacing an old handler makes a plugin reload safe: the new engine must not leave
-        // the previous engine's interceptor in the pipeline.
+        // Replacing an old handler makes a plugin reload safe: the new engine must not leave the previous engine's interceptor in the pipeline.
         if (channel.pipeline().get("raytrace") != null) {
             channel.pipeline().remove("raytrace");
         }
@@ -318,10 +310,8 @@ public final class NativeProtocol {
             Class<?> type = connection.getClass();
             SendBinding binding = sendBinding;
             if (binding == null || binding.type() != type) {
-                Method method = type.getMethod("send",
-                        Class.forName("net.minecraft.network.protocol.Packet"));
-                MethodHandle handle = MethodHandles.publicLookup().unreflect(method)
-                        .asType(MethodType.methodType(void.class, Object.class, Object.class));
+                Method method = type.getMethod("send", Class.forName("net.minecraft.network.protocol.Packet"));
+                MethodHandle handle = MethodHandles.publicLookup().unreflect(method).asType(MethodType.methodType(void.class, Object.class, Object.class));
                 binding = new SendBinding(type, handle);
                 sendBinding = binding;
             }
@@ -338,8 +328,7 @@ public final class NativeProtocol {
         try {
             Constructor<?> constructor = removeEntitiesConstructor;
             if (constructor == null) {
-                Class<?> packetClass = Class.forName(
-                        "net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket");
+                Class<?> packetClass = Class.forName("net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket");
                 constructor = packetClass.getConstructor(int[].class);
                 removeEntitiesConstructor = constructor;
             }
@@ -351,14 +340,7 @@ public final class NativeProtocol {
 
     private static volatile Constructor<?> bundleConstructor;
 
-    /**
-     * The packets inside a bundle. The server sends an entity's spawn together with its data,
-     * equipment and attributes as one bundle, and the Netty handler sees only the bundle: the
-     * individual packets are split off further down the pipeline. Without looking inside,
-     * a spawn packet could never be held back.
-     *
-     * @return the sub-packets, or null if this server version does not expose them
-     */
+    // The packets inside a bundle, or null if this server does not expose them.
     public static List<Object> bundleSubPackets(Object bundle) {
         try {
             Object value;
@@ -394,6 +376,91 @@ public final class NativeProtocol {
         }
     }
 
+    // A new game bundle holding these packets, or null if it cannot be built.
+    public static Object newGameBundle(List<Object> packets) {
+        try {
+            Class<?> type = Class.forName("net.minecraft.network.protocol.game.ClientboundBundlePacket");
+            return type.getConstructor(Iterable.class).newInstance(packets);
+        } catch (ReflectiveOperationException | RuntimeException exception) {
+            return null;
+        }
+    }
+
+    // Locator-bar waypoint packets (1.21.6+).
+    private static final class Waypoints {
+        static final Waypoints INSTANCE = create();
+
+        final Constructor<?> packetConstructor;
+        final Method setAzimuth;
+        final Method removeWaypoint;
+        final Class<? extends Enum> operationClass;
+
+        private Waypoints(Constructor<?> packetConstructor, Method setAzimuth, Method removeWaypoint, Class<? extends Enum> operationClass) {
+            this.packetConstructor = packetConstructor;
+            this.setAzimuth = setAzimuth;
+            this.removeWaypoint = removeWaypoint;
+            this.operationClass = operationClass;
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        private static Waypoints create() {
+            try {
+                Class<?> packet = Class.forName("net.minecraft.network.protocol.game.ClientboundTrackedWaypointPacket");
+                Class<?> operation = Class.forName("net.minecraft.network.protocol.game.ClientboundTrackedWaypointPacket$Operation");
+                Class<?> waypoint = Class.forName("net.minecraft.world.waypoints.TrackedWaypoint");
+                Class<?> icon = Class.forName("net.minecraft.world.waypoints.Waypoint$Icon");
+                Constructor<?> constructor = packet.getConstructor(operation, waypoint);
+                Method azimuth = waypoint.getMethod("setAzimuth", java.util.UUID.class, icon, float.class);
+                Method remove = packet.getMethod("removeWaypoint", java.util.UUID.class);
+                return new Waypoints(constructor, azimuth, remove, (Class<? extends Enum>) operation);
+            } catch (Throwable throwable) {
+                return null;
+            }
+        }
+    }
+
+    // A waypoint packet ("TRACK" or "UPDATE") carrying only a direction for this UUID, or null.
+    @SuppressWarnings("unchecked")
+    public static Object newAzimuthWaypoint(String operation, java.util.UUID uuid, Object icon, float azimuth) {
+        Waypoints waypoints = Waypoints.INSTANCE;
+        if (waypoints == null) {
+            return null;
+        }
+        try {
+            Object waypoint = waypoints.setAzimuth.invoke(null, uuid, icon, azimuth);
+            return waypoints.packetConstructor.newInstance(Enum.valueOf(waypoints.operationClass, operation), waypoint);
+        } catch (Throwable throwable) {
+            return null;
+        }
+    }
+
+    // A waypoint packet with this operation for an existing waypoint object, or null.
+    @SuppressWarnings("unchecked")
+    public static Object newWaypointPacket(String operation, Object waypoint) {
+        Waypoints waypoints = Waypoints.INSTANCE;
+        if (waypoints == null) {
+            return null;
+        }
+        try {
+            return waypoints.packetConstructor.newInstance(Enum.valueOf(waypoints.operationClass, operation), waypoint);
+        } catch (Throwable throwable) {
+            return null;
+        }
+    }
+
+    // A packet that takes this waypoint off the client's locator bar, or null.
+    public static Object newWaypointRemove(java.util.UUID uuid) {
+        Waypoints waypoints = Waypoints.INSTANCE;
+        if (waypoints == null) {
+            return null;
+        }
+        try {
+            return waypoints.removeWaypoint.invoke(null, uuid);
+        } catch (Throwable throwable) {
+            return null;
+        }
+    }
+
     // @return a problem rewriting bundles, or null
     public static String bundleSupportProblem() {
         try {
@@ -411,9 +478,7 @@ public final class NativeProtocol {
         }
     }
 
-    // Block-change packets are broadcast to every tracking player as one shared object, so
-    // masking builds a private copy instead of mutating it. Copies use the server's own packet
-    // constructors.
+    // Block-change packets are shared by all tracking players, so masking builds a private copy.
     private static volatile Constructor<?> blockUpdateConstructor;
     private static volatile Constructor<?> sectionUpdateConstructor;
     private static volatile Constructor<?> short2ObjectMapConstructor;
@@ -421,11 +486,7 @@ public final class NativeProtocol {
     private static volatile Method sectionPosOf;
     private static volatile Class<?> sectionUpdatePacketClass;
 
-    /**
-     * Builds a private single-block-update packet for one player.
-     *
-     * @return the copy, or null if this server version cannot build one
-     */
+    // Builds a private single-block-update packet for one player.
     public static Object copyBlockUpdate(Object packet, Object blockState) {
         try {
             Constructor<?> constructor = blockUpdateConstructor(packet.getClass());
@@ -465,12 +526,7 @@ public final class NativeProtocol {
         }
     }
 
-    /**
-     * Builds a private section-update packet; the shared original is never modified.
-     *
-     * @param replacements the fake state per entry, or null to keep the original
-     * @return the copy, or null if this server version cannot build one
-     */
+    // Builds a private section-update packet; the shared original is never modified.
     public static Object copySectionBlocksUpdate(Object packet, short[] positions, Object[] states, Object[] replacements) {
         try {
             resolveShortMap();
@@ -489,13 +545,7 @@ public final class NativeProtocol {
         }
     }
 
-    /**
-     * Builds a section block-update packet from scratch, straight from server block states.
-     * Used to send revealed terrain without a Bukkit {@code BlockData} object per block.
-     *
-     * @param positions section-relative positions, {@code (x << 8) | (z << 4) | y}
-     * @return the packet, or null if this server version cannot build one
-     */
+    // Builds a section block-update packet from scratch, straight from server block states.
     public static Object newSectionBlocksUpdate(int sectionX, int sectionY, int sectionZ, short[] positions, Object[] states, int count) {
         try {
             resolveShortMap();
@@ -511,8 +561,7 @@ public final class NativeProtocol {
             Object section = factory.invoke(null, sectionX, sectionY, sectionZ);
             Class<?> packetClass = sectionUpdatePacketClass;
             if (packetClass == null) {
-                packetClass = Class.forName(
-                        "net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket");
+                packetClass = Class.forName("net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket");
                 sectionUpdatePacketClass = packetClass;
             }
             return sectionUpdateConstructor(packetClass).newInstance(section, map);
@@ -539,16 +588,12 @@ public final class NativeProtocol {
         }
     }
 
-    // Per-player outgoing handler; all decisions are made by the {@link Interceptor}.
+    // Per-player outgoing handler; all decisions are made by the Interceptor.
     public static final class OutboundHandler extends ChannelDuplexHandler {
 
         private final Interceptor interceptor;
         private final Object owner;
 
-        /**
-         * @param owner an opaque per-player object handed back to the interceptor with every
-         *              packet, so it needs no lookup to find the player's state
-         */
         public OutboundHandler(Interceptor interceptor, Object owner) {
             this.interceptor = interceptor;
             this.owner = owner;
@@ -565,8 +610,6 @@ public final class NativeProtocol {
                 }
                 if (forwarded != message) {
                     // Replace the shared broadcast packet with this player's copy.
-                    // context.write starts at the previous outbound handler, so the copy is
-                    // not intercepted again.
                     context.write(forwarded, promise);
                     return;
                 }
@@ -577,10 +620,6 @@ public final class NativeProtocol {
 
     // Decides what happens to one outgoing packet.
     public interface Interceptor {
-        /**
-         * @return the packet to forward (the original or a per-player copy), or {@code null} if
-         *         the packet must not reach this client
-         */
         Object intercept(Object owner, Object packet);
     }
 
@@ -632,8 +671,7 @@ public final class NativeProtocol {
             strategyField = containerClass.getDeclaredField("strategy");
             strategyField.setAccessible(true);
 
-            // 1.21.5+ builds sections from a PalettedContainerFactory; 1.21.4 and older use
-            // the biome registry directly, with no factory class.
+            // 1.21.5+ builds sections from a PalettedContainerFactory; 1.21.4 and older use the biome registry directly, with no factory class.
             java.lang.reflect.Constructor<?> modernSection = null;
             java.lang.reflect.Constructor<?> modernSingle = null;
             java.lang.reflect.Constructor<?> oldSection = null;
@@ -645,8 +683,7 @@ public final class NativeProtocol {
                 modernSection = sectionClass.getConstructor(factoryClass);
                 modernSingle = containerClass.getConstructor(Object.class, strategyClass);
             } catch (Throwable modernFailure) {
-                // Resolve the constructors by parameter type, not by class name: the plugin
-                // remapper can rewrite internal names, which broke this on 1.21.4.
+                // Resolved by parameter type, not class name: the remapper can rename internals (it did on 1.21.4).
                 blockRegistry = blockStateRegistry();
                 biomeRegistry = biomeRegistry();
                 for (java.lang.reflect.Constructor<?> candidate : sectionClass.getConstructors()) {
@@ -723,8 +760,7 @@ public final class NativeProtocol {
             return registryAccessClass.getMethod("lookupOrThrow", resourceKey).invoke(registryAccess, biomeKey);
         }
 
-        // After a failed setup the next attempt waits, so that an unsupported server does not
-        // repeat the whole reflective lookup (and its lock) for every single chunk packet.
+        // After a failed setup the next try waits, so an unsupported server does not redo it per chunk.
         private static final long RETRY_DELAY_NANOS = 30_000_000_000L;
         private static volatile boolean failedOnce;
         private static volatile long retryAtNanos;
@@ -757,13 +793,11 @@ public final class NativeProtocol {
     }
 
     // Null when the server's chunk format is available, otherwise a short problem description.
-    // A broken chunk masking must be loud, not silent.
     public static String chunkFormatProblem() {
         return ChunkFormat.get() == null ? "the server's chunk classes (LevelChunkSection / PalettedContainer) could not be found" : null;
     }
 
-    // Whether sections need the engine's {@code PalettedContainerFactory}. On 1.21.4 and older
-    // a null factory is normal, not a startup failure.
+    // Whether sections need the engine's PalettedContainerFactory.
     public static boolean palettedContainerFactoryRequired() {
         ChunkFormat format = ChunkFormat.get();
         return format != null && format.requiresFactory;
@@ -783,7 +817,6 @@ public final class NativeProtocol {
     }
 
     // Checks that block-update packets and their per-player copy paths exist on this server.
-    // They are shared between players, so a private copy must be possible.
     public static String blockUpdateFormatProblem() {
         try {
             Class<?> packet = Class.forName("net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket");
@@ -859,15 +892,7 @@ public final class NativeProtocol {
     // @return a problem reading effect-packet coordinates, or null
 
     public static String effectPositionSupportProblem() {
-        String[] packets = {
-                "ClientboundSoundPacket",
-                "ClientboundLevelParticlesPacket",
-                "ClientboundExplodePacket",
-                "ClientboundLevelEventPacket",
-                "ClientboundBlockDestructionPacket",
-                "ClientboundBlockEventPacket",
-                "ClientboundBlockEntityDataPacket"
-        };
+        String[] packets = {"ClientboundSoundPacket", "ClientboundLevelParticlesPacket", "ClientboundExplodePacket", "ClientboundLevelEventPacket", "ClientboundBlockDestructionPacket", "ClientboundBlockEventPacket", "ClientboundBlockEntityDataPacket"};
         for (String name : packets) {
             try {
                 Class<?> packet = Class.forName("net.minecraft.network.protocol.game." + name);
@@ -948,8 +973,7 @@ public final class NativeProtocol {
     public interface BlockVisibility {
         boolean isVisible(int x, int y, int z);
 
-        // Whether any block of the box (inclusive corners) is earned. Implementations backed by a
-        // cell grid override this with a check per cell instead of per block.
+        // Whether any block of the box (inclusive corners) is earned.
         default boolean anyInBox(int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
             for (int x = minX; x <= maxX; x++) {
                 for (int z = minZ; z <= maxZ; z++) {
@@ -964,18 +988,7 @@ public final class NativeProtocol {
         }
     }
 
-    /**
-     * Rewrites the encoded chunk snapshot: masked blocks become fake, earned blocks stay real.
-     *
-     * <p>The original packet is never modified. A chunk packet can be one object shared by
-     * several players (a chunk refresh sends the same instance to everyone in range), and
-     * masking it in place let one player's mask - or worse, another player's earned blocks -
-     * reach a different client, with two Netty threads racing on the same fields. The masked
-     * data goes into a private shallow copy instead; only if this server cannot copy the packet
-     * is the old in-place rewrite used.
-     *
-     * @return the packet to send (normally a private copy), or null if it could not be masked
-     */
+    // Masks the chunk data into a private copy (the packet may be shared); null if it cannot be masked.
     public static Object maskChunkData(Object packet, Object factory, int sectionCount, int minY, int[] ceilings, int[] oreCeilings, java.util.function.IntFunction<Object> fakeStateFor, int chunkX, int chunkZ, BlockVisibility visible, java.util.function.Predicate<Object> sensitiveState) {
         try {
             ChunkFormat format = ChunkFormat.get();
@@ -1025,12 +1038,7 @@ public final class NativeProtocol {
         }
     }
 
-    /**
-     * The block entities the viewer may receive, as a new list, or null when every entry is kept
-     * (or the list cannot be read). Unearned block entities below the ceiling are dropped: the
-     * client would still draw them. A new list is built rather than removing from the packet's
-     * own one, which may be shared or immutable.
-     */
+    // The block entities the viewer may receive, as a new list, or null when every entry is kept (or the list cannot be read).
     private static List<Object> filteredBlockEntities(Object chunkData, int[] ceilings, int chunkX, int chunkZ, BlockVisibility visible) {
         try {
             Object value = get(chunkData, "blockEntitiesData");
@@ -1064,8 +1072,7 @@ public final class NativeProtocol {
         }
     }
 
-    // Builds an object of a class without running its constructor, then copies every instance
-    // field: a shallow clone for packet classes that have no copy constructor.
+    // A shallow clone for packet classes without a copy constructor.
     private record ShallowCopier(Constructor<?> constructor, Field[] fields) {}
 
     private static final ShallowCopier NO_COPIER = new ShallowCopier(null, new Field[0]);
@@ -1079,9 +1086,7 @@ public final class NativeProtocol {
             try {
                 Class<?> factoryClass = Class.forName("sun.reflect.ReflectionFactory");
                 Object factory = factoryClass.getMethod("getReflectionFactory").invoke(null);
-                Constructor<?> constructor = (Constructor<?>) factoryClass
-                        .getMethod("newConstructorForSerialization", Class.class, Constructor.class)
-                        .invoke(factory, type, Object.class.getDeclaredConstructor());
+                Constructor<?> constructor = (Constructor<?>) factoryClass.getMethod("newConstructorForSerialization", Class.class, Constructor.class).invoke(factory, type, Object.class.getDeclaredConstructor());
                 constructor.setAccessible(true);
                 List<Field> fields = new ArrayList<>();
                 for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
@@ -1160,8 +1165,7 @@ public final class NativeProtocol {
                 format.sectionRead.invoke(chunkSection, in);
                 int sectionEnd = source.readerIndex();
 
-                // Masked range of each column in this section. Below maskTop everything is fake;
-                // between maskTop and oreTop only ores, containers and similar blocks are fake.
+                // Masked range of each column in this section.
                 boolean fullyMasked = true;
                 boolean anyMasked = false;
                 for (int x = 0; x < 16; x++) {
@@ -1196,33 +1200,27 @@ public final class NativeProtocol {
                         Object fake = fakeByY[0];
                         if (fake != null && fake == fakeByY[15]) {
                             // The whole section is one fake block: encode a single-value container.
-                            Object single = format.newSingleValueContainer(
-                                    fake, format.strategyField.get(states));
+                            Object single = format.newSingleValueContainer(fake, format.strategyField.get(states));
                             set(chunkSection, "states", single);
                             format.sectionRecalc.invoke(chunkSection);
                         } else {
-                            maskBlocks(format, states, maskTop, oreTop, baseY, baseX, baseZ,
-                                    fakeByY, visible, sensitiveState);
+                            maskBlocks(format, states, maskTop, oreTop, baseY, baseX, baseZ, fakeByY, visible, sensitiveState);
                             format.sectionRecalc.invoke(chunkSection);
                         }
                     } else {
-                        maskBlocks(format, states, maskTop, oreTop, baseY, baseX, baseZ,
-                                fakeByY, visible, sensitiveState);
+                        maskBlocks(format, states, maskTop, oreTop, baseY, baseX, baseZ, fakeByY, visible, sensitiveState);
                         format.sectionRecalc.invoke(chunkSection);
                     }
                 }
                 if (anyMasked) {
                     format.sectionWrite.invoke(chunkSection, out);
                 } else {
-                    // Nothing in this section changes: copy the bytes the server wrote instead
-                    // of re-encoding the same data.
+                    // Nothing in this section changes: copy the bytes the server wrote instead of re-encoding the same data.
                     target.writeBytes(source, sectionStart, sectionEnd - sectionStart);
                 }
             }
             if (source.isReadable()) {
-                // Never cut a chunk short: if the buffer holds more than the expected sections
-                // (e.g. a world-height mismatch during a dimension change), pass the rest on
-                // unchanged instead of sending the client a truncated, undecodable chunk.
+                // Never cut a chunk short: extra sections (height mismatch on a world change) pass unchanged.
                 target.writeBytes(source);
             }
         } catch (Throwable throwable) {
@@ -1242,10 +1240,8 @@ public final class NativeProtocol {
         return visible.anyInBox(baseX, baseY, baseZ, baseX + 15, baseY + 15, baseZ + 15);
     }
 
-    // Replaces each block below its column's ceiling with the fake block unless the viewer has
-    // already earned it.
-    private static void maskBlocks(ChunkFormat format, Object states, int[] maskTop, int[] oreTop, int baseY, int baseX, int baseZ, Object[] fakeByY, BlockVisibility visible, java.util.function.Predicate<Object> sensitiveState)
-            throws Throwable {
+    // Replaces each block below its column's ceiling with the fake block unless the viewer has already earned it.
+    private static void maskBlocks(ChunkFormat format, Object states, int[] maskTop, int[] oreTop, int baseY, int baseX, int baseZ, Object[] fakeByY, BlockVisibility visible, java.util.function.Predicate<Object> sensitiveState) throws Throwable {
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
                 int index = x * 16 + z;
@@ -1268,8 +1264,7 @@ public final class NativeProtocol {
                 if (sensitiveState == null) {
                     continue;
                 }
-                // Inside the soil buffer, keep natural terrain visible but hide ores,
-                // containers and block-entity blocks until the player earns the cell.
+                // Inside the soil buffer, keep natural terrain visible but hide ores, containers and block-entity blocks until the player earns the cell.
                 for (int worldY = top; worldY < hardTop; worldY++) {
                     if (visible != null && visible.isVisible(baseX + x, worldY, baseZ + z)) {
                         continue;

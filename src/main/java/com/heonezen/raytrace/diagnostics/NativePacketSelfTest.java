@@ -10,7 +10,6 @@ import java.util.List;
 import java.util.Map;
 
 // Checks that block-change packets are copied per player without touching the shared original.
-// Needs a live server because the packet and block-state classes only exist there.
 public final class NativePacketSelfTest {
 
     private final List<Result> results = new ArrayList<>();
@@ -51,9 +50,7 @@ public final class NativePacketSelfTest {
     private void testSectionUpdateCopy() throws ReflectiveOperationException {
         Class<?> sectionPosClass = Class.forName("net.minecraft.core.SectionPos");
         Object sectionPos = sectionPosClass.getMethod("of", int.class, int.class, int.class).invoke(null, 0, 0, 0);
-        // Use a full section's worth of distinct positions, not just two: the copy constructor
-        // rebuilds the position and state arrays from a map, and this checks that the two arrays
-        // stay aligned in the map's iteration order.
+        // A full section of distinct positions: the copy rebuilds both arrays from a map, which must keep them aligned.
         short[] positions = new short[16];
         for (int i = 0; i < positions.length; i++) {
             positions[i] = (short) ((i << 8) | ((15 - i) << 4) | (i & 15));

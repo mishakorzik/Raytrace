@@ -14,54 +14,24 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
-// Lowers the configured masking ceiling to each column's real surface. Height maps are read via
-// NMS on the Netty thread; if unavailable, the flat ceiling is used. The motion height map
-// ignores leaves but counts fluids, so fluid columns fall back to the ocean floor.
+// Lowers the configured masking ceiling to each column's real surface.
 public final class SurfaceHeights {
 
     // Surface materials treated as soil: the walkable layer that stays real under the surface buffer.
-    private static final Set<Material> SOFT_SURFACE_BLOCKS = Set.of(
-            Material.DIRT,
-            Material.GRASS_BLOCK,
-            Material.PODZOL,
-            Material.MYCELIUM,
-            Material.COARSE_DIRT,
-            Material.ROOTED_DIRT,
-            Material.MUD,
-            Material.SAND,
-            Material.RED_SAND,
-            Material.GRAVEL,
-            Material.CLAY,
-            Material.SNOW,
-            Material.SNOW_BLOCK,
-            Material.ICE,
-            Material.PACKED_ICE,
-            Material.BLUE_ICE,
-            Material.MAGMA_BLOCK,
-            Material.SOUL_SAND,
-            Material.SOUL_SOIL);
+    private static final Set<Material> SOFT_SURFACE_BLOCKS = Set.of(Material.DIRT, Material.GRASS_BLOCK, Material.PODZOL, Material.MYCELIUM, Material.COARSE_DIRT, Material.ROOTED_DIRT, Material.MUD, Material.SAND, Material.RED_SAND, Material.GRAVEL, Material.CLAY, Material.SNOW, Material.SNOW_BLOCK, Material.ICE, Material.PACKED_ICE, Material.BLUE_ICE, Material.MAGMA_BLOCK, Material.SOUL_SAND, Material.SOUL_SOIL);
 
     private SurfaceHeights() {}
 
-    // Whether a surface block is wood rather than terrain. Without this a tree trunk would become
-    // the column's surface and a fake-stone pillar would show under it.
+    // Whether a surface block is wood rather than terrain.
     private static boolean isWoody(Material material) {
         if (material == null) {
             return false;
         }
         String name = material.name();
-        return name.endsWith("_LOG") || name.endsWith("_WOOD") || name.endsWith("_STEM")
-                || name.endsWith("_HYPHAE")
-                || material == Material.BAMBOO || material == Material.BAMBOO_BLOCK
-                || material == Material.MANGROVE_ROOTS
-                || material == Material.MUDDY_MANGROVE_ROOTS
-                || material == Material.MUSHROOM_STEM
-                || material == Material.CACTUS;
+        return name.endsWith("_LOG") || name.endsWith("_WOOD") || name.endsWith("_STEM") || name.endsWith("_HYPHAE") || material == Material.BAMBOO || material == Material.BAMBOO_BLOCK || material == Material.MANGROVE_ROOTS || material == Material.MUDDY_MANGROVE_ROOTS || material == Material.MUSHROOM_STEM || material == Material.CACTUS;
     }
 
-    // Hard cutoff for one column. Everything below this Y is underground, so ores, containers
-    // and block entities are hidden there unless the viewer earned the cell. Unlike
-    // {@link #effectiveCeiling}, this never applies the soil surface buffer.
+    // Hard cutoff for one column.
     public static int hardCeiling(World world, WorldSettings worldSettings, int x, int z) {
         int configuredCeiling = Math.min(worldSettings.maskCeilingY(), world.getMaxHeight());
         int minY = world.getMinHeight();
@@ -105,8 +75,7 @@ public final class SurfaceHeights {
         int localX = x & 15;
         int localZ = z & 15;
 
-        // Fast path: the loaded chunk's primed height map. Safe on the Netty thread, where
-        // Bukkit's accessor may not be callable.
+        // Fast path: the loaded chunk's primed height map.
         Object chunk = Nms.chunkAt(world, chunkX, chunkZ);
         if (chunk != null) {
             Integer surfaceY = Nms.surfaceY(chunk, world, localX, localZ);
@@ -118,8 +87,7 @@ public final class SurfaceHeights {
         }
 
         if (!world.isChunkLoaded(chunkX, chunkZ)) {
-            // Never force-load a chunk just to measure it; an unloaded chunk is not on screen,
-            // so the flat ceiling is safe.
+            // Never force-load a chunk just to measure it; an unloaded chunk is not on screen, so the flat ceiling is safe.
             return configuredCeiling;
         }
 
@@ -134,21 +102,14 @@ public final class SurfaceHeights {
             return configuredCeiling;
         }
 
-        // Bukkit fallback for servers where the NMS chunk is unreachable. Still correct on the
-        // region thread.
+        // Bukkit fallback for servers where the NMS chunk is unreachable. Still correct on the region thread.
         return resolveCeiling(configuredCeiling, minY, surfaceBuffer, () -> isSoftSurface(world, chunkX, chunkZ, x, naturalSurfaceY, z), naturalSurfaceY);
     }
 
-    /**
-     * A chunk's per-column ceilings. {@code values} are the normal terrain ceilings (with the
-     * soil buffer); {@code oreValues} are the hard cutoffs used for ores, containers and block
-     * entities. {@code fromTerrain == false} means a flat fallback, which must not be cached: a
-     * later packet may arrive once the height map is readable and use real terrain.
-     */
+    // A chunk's per-column ceilings (soil buffer) and hard cutoffs (ores). fromTerrain false is a flat fallback, never cached.
     public record ChunkCeilings(int[] values, int[] oreValues, boolean fromTerrain) {}
 
-    // Per-column ceilings indexed by {@code x * 16 + z}; packet height map first, then the loaded
-    // chunk. A flat fallback is never cached.
+    // Per-column ceilings indexed by x * 16 + z; packet height map first, then the loaded chunk.
     public static ChunkCeilings ceilingsForChunk(World world, WorldSettings worldSettings, int chunkX, int chunkZ, Object chunkData) {
         int configuredCeiling = Math.min(worldSettings.maskCeilingY(), world.getMaxHeight());
         int minY = world.getMinHeight();
@@ -186,8 +147,7 @@ public final class SurfaceHeights {
                     if (surfaceY >= maxY) {
                         continue;
                     }
-                    // The packet map counts water, so resolve fluid columns to the seabed via the
-                    // live chunk.
+                    // The packet map counts water, so resolve fluid columns to the seabed via the live chunk.
                     if (chunk != null) {
                         surfaceY = Nms.adjustSurface(chunk, world, x, z, surfaceY);
                     }
@@ -253,7 +213,7 @@ public final class SurfaceHeights {
         return Math.min(configuredCeiling, Math.max(naturalCeiling, minY));
     }
 
-    // The Bukkit-only variant of {@link #resolveCeiling}, for servers without reachable NMS.
+    // The Bukkit-only variant of resolveCeiling, for servers without reachable NMS.
     private static int resolveCeiling(int configuredCeiling, int minY, int surfaceBuffer, java.util.function.BooleanSupplier softSurface, int surfaceY) {
         int naturalCeiling;
         if (surfaceBuffer > 0 && softSurface.getAsBoolean()) {
@@ -264,8 +224,7 @@ public final class SurfaceHeights {
         return Math.min(configuredCeiling, Math.max(naturalCeiling, minY));
     }
 
-    // Whether the surface is soil, checking the top block and a few blocks below it. Unknown
-    // states count as soil, which is safe.
+    // Whether the surface is soil, checking the top block and a few blocks below it.
     private static boolean isSoftSurface(World world, int chunkX, int chunkZ, int x, int surfaceY, int z) {
         try {
             Chunk chunk = world.getChunkAt(chunkX, chunkZ);
@@ -290,8 +249,7 @@ public final class SurfaceHeights {
         }
     }
 
-    // Reflective access to the server's chunk height maps and block states. There is no NMS compile
-    // dependency; any missing member degrades to the flat ceiling, and nothing here loads a chunk.
+    // Reflective access to the server's chunk height maps and block states.
     private static final class Nms {
 
         private static final Method GET_CHUNK_SOURCE;
@@ -353,8 +311,7 @@ public final class SurfaceHeights {
                     // The direct block scan is only a fallback for an unprimed height map.
                 }
                 try {
-                    // MOTION_BLOCKING_NO_LEAVES counts fluids and would report the water surface;
-                    // OCEAN_FLOOR ignores fluids and gives the seabed.
+                    // MOTION_BLOCKING_NO_LEAVES counts fluids and would report the water surface; OCEAN_FLOOR ignores fluids and gives the seabed.
                     oceanFloorType = heightmapTypes.getField("OCEAN_FLOOR").get(null);
                     Object predicate = heightmapTypes.getMethod("isOpaque").invoke(oceanFloorType);
                     if (predicate instanceof Predicate<?> value) {
@@ -367,8 +324,7 @@ public final class SurfaceHeights {
                 }
                 try {
                     getFluidState = stateClass.getMethod("getFluidState");
-                    Class<?> fluidState = Class.forName(
-                            "net.minecraft.world.level.material.FluidState");
+                    Class<?> fluidState = Class.forName("net.minecraft.world.level.material.FluidState");
                     fluidIsEmpty = fluidState.getMethod("isEmpty");
                 } catch (Throwable ignored) {
                     // The material fallback below still recognises water and lava.
@@ -397,8 +353,7 @@ public final class SurfaceHeights {
             AVAILABLE = chunkSource != null && chunkAt != null && heightmapTypes != null && motionBlocking != null && hasPrimed != null && getHeight != null && getBlockState != null;
         }
 
-        private Nms() {
-        }
+        private Nms() {}
 
         // The already-loaded server chunk, or null if unavailable.
         static Object chunkAt(World world, int chunkX, int chunkZ) {
@@ -463,7 +418,7 @@ public final class SurfaceHeights {
             }
         }
 
-        // Primed {@code OCEAN_FLOOR} height of one column, or null if unavailable.
+        // Primed OCEAN_FLOOR height of one column, or null if unavailable.
         private static Integer oceanFloorAt(Object chunk, int x, int z) {
             if (OCEAN_FLOOR == null || !Boolean.TRUE.equals(hasPrimedHeightmap(chunk, OCEAN_FLOOR))) {
                 return null;
@@ -472,8 +427,6 @@ public final class SurfaceHeights {
         }
 
         // Real terrain surface of one column: the primed height map, otherwise a direct block scan.
-        // Both paths start from {@code MOTION_BLOCKING_NO_LEAVES}, which counts fluids, so fluid
-        // columns are resolved to {@code OCEAN_FLOOR}.
         static Integer surfaceY(Object chunk, World world, int x, int z) {
             if (!AVAILABLE) {
                 return null;
@@ -503,15 +456,12 @@ public final class SurfaceHeights {
             }
         }
 
-        // Resolves a height-map surface to real terrain: through vegetation first, then through
-        // fluid or an ice cap to the floor. The order matters for trees standing in shallow water.
+        // Resolves a height-map surface to real terrain: through vegetation first, then through fluid or an ice cap to the floor.
         static Integer adjustSurface(Object chunk, World world, int x, int z, int surfaceY) {
-            return adjustForFluids(chunk, world, x, z,
-                    adjustForVegetation(chunk, world, x, z, surfaceY));
+            return adjustForFluids(chunk, world, x, z, adjustForVegetation(chunk, world, x, z, surfaceY));
         }
 
-        // Replaces a wood or foliage surface with the ground underneath, so a tree trunk does not
-        // become the masking ceiling and leave a fake-stone pillar below it.
+        // Replaces a wood or foliage surface with the ground below, so trees leave no fake-stone pillar.
         private static int adjustForVegetation(Object chunk, World world, int x, int z, int surfaceY) {
             if (chunk == null) {
                 return surfaceY;
@@ -545,23 +495,20 @@ public final class SurfaceHeights {
             return isWoody(material) || (material != null && material.name().endsWith("_LEAVES"));
         }
 
-        // Turns a fluid or ice-capped surface into the seabed below it, scanning with the
-        // {@code OCEAN_FLOOR} predicate, which ignores fluids.
+        // Turns a fluid or ice-capped surface into the seabed below it, scanning with the OCEAN_FLOOR predicate, which ignores fluids.
         static Integer adjustForFluids(Object chunk, World world, int x, int z, int surfaceY) {
             if (chunk == null || surfaceY < world.getMinHeight()) {
                 return surfaceY;
             }
             try {
                 int minY = world.getMinHeight();
-                // A waterlogged solid is not open ocean; only open fluid, or fluid under a thin
-                // cap such as ice, marks a water column.
+                // A waterlogged solid is not open ocean; only open fluid, or fluid under a thin cap such as ice, marks a water column.
                 boolean openFluid = isFluidAt(chunk, x, surfaceY, z) && !isOccludingAt(chunk, x, surfaceY, z);
                 boolean fluidColumn = openFluid || (surfaceY - 1 >= minY && isFluidAt(chunk, x, surfaceY - 1, z));
                 if (!fluidColumn) {
                     return surfaceY;
                 }
-                // With an ice or snow cap OCEAN_FLOOR returns the cap, not the seabed, so only use
-                // it for open fluid.
+                // With an ice or snow cap OCEAN_FLOOR returns the cap, not the seabed, so only use it for open fluid.
                 if (openFluid) {
                     Integer floorHeight = oceanFloorAt(chunk, x, z);
                     if (floorHeight != null) {
@@ -586,10 +533,7 @@ public final class SurfaceHeights {
                     // No server predicate: use the material test, never treating fluid as ground.
                     for (int y = surfaceY - 1; y >= minY; y--) {
                         Material material = materialAt(chunk, x, y, z);
-                        if (material != null && material != Material.WATER
-                                && material != Material.LAVA
-                                && material != Material.BUBBLE_COLUMN
-                                && material.isSolid()) {
+                        if (material != null && material != Material.WATER && material != Material.LAVA && material != Material.BUBBLE_COLUMN && material.isSolid()) {
                             return y;
                         }
                     }
@@ -627,8 +571,7 @@ public final class SurfaceHeights {
                     Object state = stateAt(chunk, x, y, z);
                     if (state != null) {
                         Object fluid = GET_FLUID_STATE.invoke(state);
-                        return fluid != null
-                                && !Boolean.TRUE.equals(FLUID_IS_EMPTY.invoke(fluid));
+                        return fluid != null && !Boolean.TRUE.equals(FLUID_IS_EMPTY.invoke(fluid));
                     }
                 } catch (Throwable ignored) {
                     // Fall through to the material test.
@@ -639,7 +582,6 @@ public final class SurfaceHeights {
         }
 
         // Whether the surface is soil, checking the top block and a few blocks below it through air.
-        // Unknown states count as soil, which is safe.
         static boolean isSoftSurface(Object chunk, int x, int z, int surfaceY, int minY) {
             // The top block is what a fluid-adjusted seabed reports, so a sand floor stays real.
             if (surfaceY >= minY) {
@@ -697,8 +639,7 @@ public final class SurfaceHeights {
         }
     }
 
-    // The packet's own height map: the client's exact terrain snapshot, safe to read on the Netty
-    // thread. The column order is read once from {@code Heightmap.getIndex} rather than guessed.
+    // The packet's own height map: the client's exact terrain snapshot, safe to read on the Netty thread.
     private static final class PacketHeights {
 
         private static final Method GET_HEIGHTMAPS;
@@ -732,10 +673,9 @@ public final class SurfaceHeights {
             INDEX_MODE = indexMode;
         }
 
-        private PacketHeights() {
-        }
+        private PacketHeights() {}
 
-        // The raw {@code MOTION_BLOCKING_NO_LEAVES} array, or null if the packet has none.
+        // The raw MOTION_BLOCKING_NO_LEAVES array, or null if the packet has none.
         static long[] raw(Object chunkData) {
             if (chunkData == null || GET_HEIGHTMAPS == null || MOTION_BLOCKING_NO_LEAVES == null) {
                 return null;

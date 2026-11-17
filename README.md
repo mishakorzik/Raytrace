@@ -90,7 +90,9 @@ Performance:
 - Reflection results (including "no such field") are cached; before, every movement packet of
   every entity cost several exceptions with stack traces on the Netty threads.
 - Rays read block data straight from the server chunk (no Bukkit block object per step).
-- Scans have a time budget (`max-scan-micros`) and resume where they stopped; nothing runs while
+- Scans have a time budget per player (`max-scan-micros`) and a shared one for all players per
+  tick and server thread (`max-scan-micros-per-tick`), for terrain and for entities alike; a
+  scan that runs out resumes where it stopped. After a few refinement passes nothing runs while
   the player stands still.
 - Entity verdicts are reused while nothing moved; the entity list is filtered while it is
   collected; entity data is read through method handles.

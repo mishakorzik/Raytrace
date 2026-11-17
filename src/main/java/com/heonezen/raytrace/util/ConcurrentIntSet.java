@@ -2,12 +2,7 @@ package com.heonezen.raytrace.util;
 
 import java.util.Arrays;
 
-/**
- * A small set of ints that is cheap to read from many threads and rarely written. Reads are a
- * binary search over an immutable sorted array (no boxing, no allocation); writes copy the
- * array under a lock. It is used for the hidden-entity ids, which the Netty threads test for
- * every outgoing entity packet while the region thread changes them a few times per second.
- */
+// A copy-on-write int set: lock-free reads from many threads, rare writes.
 public final class ConcurrentIntSet {
 
     private static final int[] EMPTY = new int[0];
