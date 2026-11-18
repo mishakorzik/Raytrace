@@ -32,6 +32,15 @@ rewrites the packets already sent to each client.
 - **Cross-version packet access.** Server internals are accessed reflectively. A missing lookup
   disables only that feature instead of breaking the connection or the plugin.
 
+## Video
+
+<details>
+<summary>Watch the showcase</summary>
+
+<iframe width="560" height="315" src="https://www.youtube-nocookie.com/embed/8WdiDinQLpQ" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+
+</details>
+
 ## Compatibility
 
 - Paper, Folia or forks **1.21.4+ / 26.x**.
